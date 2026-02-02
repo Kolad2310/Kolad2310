@@ -1,7 +1,5 @@
 ```
-
 import os
-import psutil
 import threading
 import queue
 import datetime
@@ -9,41 +7,13 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from openpyxl import load_workbook
-from concurrent.futures import ProcessPoolExecutor
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 
 # ================= SAFE CONFIG =================
-MAX_WORKERS = 2          # DO NOT increase on Windows
-CHUNK_SIZE = 50_000      # Safe for large Excel files
+CHUNK_SIZE = 50_000   # rows per write (safe)
 # ===============================================
-
-
-def read_excel_chunk_worker(args):
-    """
-    Worker-safe Excel reader
-    """
-    try:
-        file_path, sheet_name, start_row, end_row = args
-
-        wb = load_workbook(
-            file_path,
-            read_only=True,
-            data_only=True
-        )
-        ws = wb[sheet_name]
-
-        return list(
-            ws.iter_rows(
-                min_row=start_row,
-                max_row=end_row,
-                values_only=True
-            )
-        )
-
-    except Exception as e:
-        return ("__ERROR__", str(e))
 
 
 def detect_datetime_columns(rows, col_count):
@@ -86,27 +56,21 @@ def normalize_rows(rows, col_count, datetime_cols):
     return out
 
 
-# ================= CORE =================
-def excel_to_parquet_with_progress(excel_file, sheet_name, output_file, q):
+# ================= CORE (NO CONCURRENCY) =================
+def excel_to_parquet_sequential(excel_file, sheet_name, output_file, q):
     try:
         wb = load_workbook(excel_file, read_only=True, data_only=True)
         ws = wb[sheet_name]
+
         total_rows = ws.max_row
+        rows_iter = ws.iter_rows(values_only=True)
 
-        row_ranges = [
-            (start, min(start + CHUNK_SIZE - 1, total_rows))
-            for start in range(1, total_rows + 1, CHUNK_SIZE)
-        ]
+        # ---- Read first chunk for schema ----
+        first_chunk = []
+        for _ in range(min(CHUNK_SIZE, total_rows)):
+            first_chunk.append(next(rows_iter))
 
-        # Infer schema from first chunk
-        sample = read_excel_chunk_worker(
-            (excel_file, sheet_name, row_ranges[0][0], row_ranges[0][1])
-        )
-
-        if isinstance(sample, tuple):
-            raise RuntimeError(sample[1])
-
-        schema, columns, datetime_cols, col_count = build_schema(sample)
+        schema, columns, datetime_cols, col_count = build_schema(first_chunk)
 
         writer = pq.ParquetWriter(
             output_file,
@@ -114,29 +78,46 @@ def excel_to_parquet_with_progress(excel_file, sheet_name, output_file, q):
             compression="snappy"
         )
 
-        processed = 0
-        total_chunks = len(row_ranges)
+        processed_rows = 0
 
-        with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            tasks = [
-                (excel_file, sheet_name, s, e)
-                for s, e in row_ranges
-            ]
+        # ---- Write first chunk ----
+        first_chunk = normalize_rows(first_chunk, col_count, datetime_cols)
+        table = pa.Table.from_pylist(
+            [dict(zip(columns, r)) for r in first_chunk],
+            schema=schema
+        )
+        writer.write_table(table)
 
-            for rows in executor.map(read_excel_chunk_worker, tasks):
-                if isinstance(rows, tuple):
-                    raise RuntimeError(rows[1])
+        processed_rows += len(first_chunk)
+        q.put((processed_rows, total_rows))
 
-                rows = normalize_rows(rows, col_count, datetime_cols)
+        # ---- Stream remaining rows ----
+        buffer = []
+        for row in rows_iter:
+            buffer.append(row)
 
+            if len(buffer) >= CHUNK_SIZE:
+                buffer = normalize_rows(buffer, col_count, datetime_cols)
                 table = pa.Table.from_pylist(
-                    [dict(zip(columns, r)) for r in rows],
+                    [dict(zip(columns, r)) for r in buffer],
                     schema=schema
                 )
                 writer.write_table(table)
 
-                processed += 1
-                q.put((processed, total_chunks))
+                processed_rows += len(buffer)
+                q.put((processed_rows, total_rows))
+                buffer.clear()
+
+        # ---- Write remainder ----
+        if buffer:
+            buffer = normalize_rows(buffer, col_count, datetime_cols)
+            table = pa.Table.from_pylist(
+                [dict(zip(columns, r)) for r in buffer],
+                schema=schema
+            )
+            writer.write_table(table)
+            processed_rows += len(buffer)
+            q.put((processed_rows, total_rows))
 
         writer.close()
         q.put(("DONE", output_file))
@@ -148,7 +129,7 @@ def excel_to_parquet_with_progress(excel_file, sheet_name, output_file, q):
 # ================= GUI =================
 def launch_gui():
     root = tk.Tk()
-    root.title("Excel → Parquet (Stable Mode)")
+    root.title("Excel → Parquet (Stable, No Concurrency)")
     root.geometry("560x320")
     root.resizable(False, False)
 
@@ -166,7 +147,6 @@ def launch_gui():
 
         excel_path.set(path)
         wb = load_workbook(path, read_only=True)
-
         sheet_menu["menu"].delete(0, "end")
         for s in wb.sheetnames:
             sheet_menu["menu"].add_command(
@@ -184,16 +164,16 @@ def launch_gui():
 
         win = tk.Toplevel()
         win.title("Processing")
-        win.geometry("420x160")
+        win.geometry("440x160")
         win.resizable(False, False)
 
         ttk.Label(
             win,
-            text="Processing Excel safely\n(no headers, values only)",
+            text="Reading Excel sequentially\n(values only, no headers)",
             padding=10
         ).pack()
 
-        bar = ttk.Progressbar(win, length=360, mode="determinate")
+        bar = ttk.Progressbar(win, length=380, mode="determinate")
         bar.pack(pady=10)
 
         lbl = ttk.Label(win, text="Starting...")
@@ -217,7 +197,7 @@ def launch_gui():
 
                 bar["maximum"] = msg[1]
                 bar["value"] = msg[0]
-                lbl.config(text=f"Processed {msg[0]} / {msg[1]} chunks")
+                lbl.config(text=f"Processed {msg[0]:,} / {msg[1]:,} rows")
 
             except queue.Empty:
                 pass
@@ -225,7 +205,7 @@ def launch_gui():
             win.after(200, poll)
 
         threading.Thread(
-            target=excel_to_parquet_with_progress,
+            target=excel_to_parquet_sequential,
             args=(excel_path.get(), sheet_name.get(), output_name.get(), q),
             daemon=True
         ).start()
