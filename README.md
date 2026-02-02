@@ -13,37 +13,36 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 
-# ================= PERFORMANCE CONFIG =================
-MAX_WORKERS = max(1, os.cpu_count() - 1)
-ROWS_PER_MB = 450
-MIN_CHUNK = 50_000
-MAX_CHUNK = 300_000
-# =====================================================
+# ================= SAFE CONFIG =================
+MAX_WORKERS = 2          # DO NOT increase on Windows
+CHUNK_SIZE = 50_000      # Safe for large Excel files
+# ===============================================
 
 
-def auto_chunk_size():
-    available_mb = psutil.virtual_memory().available // (1024 * 1024)
-    chunk = int(available_mb * ROWS_PER_MB * 0.25)
-    return max(MIN_CHUNK, min(chunk, MAX_CHUNK))
-
-
-# ---------- WORKER FUNCTIONS (TOP-LEVEL ONLY) ----------
 def read_excel_chunk_worker(args):
     """
-    Worker-safe function (pickleable)
+    Worker-safe Excel reader
     """
-    file_path, sheet_name, start_row, end_row = args
+    try:
+        file_path, sheet_name, start_row, end_row = args
 
-    wb = load_workbook(file_path, read_only=True, data_only=True)
-    ws = wb[sheet_name]
-
-    return list(
-        ws.iter_rows(
-            min_row=start_row,
-            max_row=end_row,
-            values_only=True
+        wb = load_workbook(
+            file_path,
+            read_only=True,
+            data_only=True
         )
-    )
+        ws = wb[sheet_name]
+
+        return list(
+            ws.iter_rows(
+                min_row=start_row,
+                max_row=end_row,
+                values_only=True
+            )
+        )
+
+    except Exception as e:
+        return ("__ERROR__", str(e))
 
 
 def detect_datetime_columns(rows, col_count):
@@ -55,7 +54,7 @@ def detect_datetime_columns(rows, col_count):
     return datetime_cols
 
 
-def build_safe_schema(sample_rows):
+def build_schema(sample_rows):
     col_count = max(len(r) for r in sample_rows)
     columns = [f"col_{i+1}" for i in range(col_count)]
 
@@ -73,79 +72,83 @@ def build_safe_schema(sample_rows):
 
 
 def normalize_rows(rows, col_count, datetime_cols):
-    normalized = []
-
+    out = []
     for row in rows:
         r = list(row) + [None] * (col_count - len(row))
-
         for i in range(col_count):
-            val = r[i]
+            v = r[i]
             if i in datetime_cols:
-                r[i] = val if isinstance(val, datetime.datetime) else None
+                r[i] = v if isinstance(v, datetime.datetime) else None
             else:
-                r[i] = None if val is None else str(val)
-
-        normalized.append(r)
-
-    return normalized
+                r[i] = None if v is None else str(v)
+        out.append(r)
+    return out
 
 
-# ================= CORE CONVERSION =================
-def excel_to_parquet_with_progress(excel_file, sheet_name, output_file, progress_queue):
+# ================= CORE =================
+def excel_to_parquet_with_progress(excel_file, sheet_name, output_file, q):
     try:
-        chunk_size = auto_chunk_size()
-
         wb = load_workbook(excel_file, read_only=True, data_only=True)
         ws = wb[sheet_name]
         total_rows = ws.max_row
 
         row_ranges = [
-            (start, min(start + chunk_size - 1, total_rows))
-            for start in range(1, total_rows + 1, chunk_size)
+            (start, min(start + CHUNK_SIZE - 1, total_rows))
+            for start in range(1, total_rows + 1, CHUNK_SIZE)
         ]
 
-        # Schema inference
-        sample_rows = read_excel_chunk_worker(
-            (excel_file, sheet_name, row_ranges[0][0], min(row_ranges[0][0] + 5000, row_ranges[0][1]))
+        # Infer schema from first chunk
+        sample = read_excel_chunk_worker(
+            (excel_file, sheet_name, row_ranges[0][0], row_ranges[0][1])
         )
 
-        schema, columns, datetime_cols, col_count = build_safe_schema(sample_rows)
+        if isinstance(sample, tuple):
+            raise RuntimeError(sample[1])
 
-        writer = pq.ParquetWriter(output_file, schema, compression="snappy")
+        schema, columns, datetime_cols, col_count = build_schema(sample)
+
+        writer = pq.ParquetWriter(
+            output_file,
+            schema,
+            compression="snappy"
+        )
 
         processed = 0
         total_chunks = len(row_ranges)
 
         with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
             tasks = [
-                (excel_file, sheet_name, start, end)
-                for start, end in row_ranges
+                (excel_file, sheet_name, s, e)
+                for s, e in row_ranges
             ]
 
             for rows in executor.map(read_excel_chunk_worker, tasks):
-                if rows:
-                    rows = normalize_rows(rows, col_count, datetime_cols)
-                    table = pa.Table.from_pylist(
-                        [dict(zip(columns, r)) for r in rows],
-                        schema=schema
-                    )
-                    writer.write_table(table)
+                if isinstance(rows, tuple):
+                    raise RuntimeError(rows[1])
+
+                rows = normalize_rows(rows, col_count, datetime_cols)
+
+                table = pa.Table.from_pylist(
+                    [dict(zip(columns, r)) for r in rows],
+                    schema=schema
+                )
+                writer.write_table(table)
 
                 processed += 1
-                progress_queue.put((processed, total_chunks))
+                q.put((processed, total_chunks))
 
         writer.close()
-        progress_queue.put(("DONE", output_file))
+        q.put(("DONE", output_file))
 
     except Exception as e:
-        progress_queue.put(("ERROR", str(e)))
+        q.put(("ERROR", str(e)))
 
 
 # ================= GUI =================
 def launch_gui():
     root = tk.Tk()
-    root.title("Excel → Parquet (Multiprocessing Safe)")
-    root.geometry("540x300")
+    root.title("Excel → Parquet (Stable Mode)")
+    root.geometry("560x320")
     root.resizable(False, False)
 
     excel_path = tk.StringVar()
@@ -154,7 +157,9 @@ def launch_gui():
     q = queue.Queue()
 
     def browse_file():
-        path = filedialog.askopenfilename(filetypes=[("Excel Files", "*.xlsx")])
+        path = filedialog.askopenfilename(
+            filetypes=[("Excel Files", "*.xlsx")]
+        )
         if not path:
             return
 
@@ -169,7 +174,7 @@ def launch_gui():
             )
         sheet_name.set(wb.sheetnames[0])
 
-    def start_conversion():
+    def start():
         if not excel_path.get() or not sheet_name.get():
             messagebox.showerror("Error", "Select Excel file and sheet")
             return
@@ -178,20 +183,20 @@ def launch_gui():
 
         win = tk.Toplevel()
         win.title("Processing")
-        win.geometry("420x150")
+        win.geometry("420x160")
         win.resizable(False, False)
 
         ttk.Label(
             win,
-            text="Processing Excel safely (parallel, values-only)",
+            text="Processing Excel safely\n(no headers, values only)",
             padding=10
         ).pack()
 
-        bar = ttk.Progressbar(win, length=340, mode="determinate")
+        bar = ttk.Progressbar(win, length=360, mode="determinate")
         bar.pack(pady=10)
 
-        status = ttk.Label(win, text="Starting...")
-        status.pack()
+        lbl = ttk.Label(win, text="Starting...")
+        lbl.pack()
 
         def poll():
             try:
@@ -211,7 +216,7 @@ def launch_gui():
 
                 bar["maximum"] = msg[1]
                 bar["value"] = msg[0]
-                status.config(text=f"Processed {msg[0]} / {msg[1]} chunks")
+                lbl.config(text=f"Processed {msg[0]} / {msg[1]} chunks")
 
             except queue.Empty:
                 pass
@@ -226,31 +231,30 @@ def launch_gui():
 
         poll()
 
-    # ---- Layout ----
     tk.Label(root, text="Excel File:").place(x=20, y=30)
-    tk.Entry(root, textvariable=excel_path, width=45).place(x=140, y=30)
-    tk.Button(root, text="Browse", command=browse_file).place(x=450, y=26)
+    tk.Entry(root, textvariable=excel_path, width=45).place(x=150, y=30)
+    tk.Button(root, text="Browse", command=browse_file).place(x=470, y=26)
 
-    tk.Label(root, text="Sheet:").place(x=20, y=80)
+    tk.Label(root, text="Sheet:").place(x=20, y=90)
     sheet_menu = tk.OptionMenu(root, sheet_name, "")
-    sheet_menu.place(x=140, y=75, width=220)
+    sheet_menu.place(x=150, y=85, width=220)
 
-    tk.Label(root, text="Output File:").place(x=20, y=130)
-    tk.Entry(root, textvariable=output_name, width=32).place(x=140, y=130)
+    tk.Label(root, text="Output File:").place(x=20, y=150)
+    tk.Entry(root, textvariable=output_name, width=32).place(x=150, y=150)
 
     tk.Button(
         root,
         text="Start Conversion",
-        width=22,
+        width=24,
         height=2,
         bg="#4CAF50",
         fg="white",
-        command=start_conversion
-    ).place(x=180, y=190)
+        command=start
+    ).place(x=200, y=220)
 
     root.mainloop()
 
 
-# ================= ENTRY POINT =================
+# ================= ENTRY =================
 if __name__ == "__main__":
     launch_gui()
