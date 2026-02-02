@@ -27,10 +27,13 @@ def auto_chunk_size():
     return max(MIN_CHUNK, min(chunk, MAX_CHUNK))
 
 
-def read_excel_chunk(file_path, sheet_name, start_row, end_row):
+# ---------- WORKER FUNCTIONS (TOP-LEVEL ONLY) ----------
+def read_excel_chunk_worker(args):
     """
-    Read Excel values only (no formulas, no headers)
+    Worker-safe function (pickleable)
     """
+    file_path, sheet_name, start_row, end_row = args
+
     wb = load_workbook(file_path, read_only=True, data_only=True)
     ws = wb[sheet_name]
 
@@ -44,9 +47,6 @@ def read_excel_chunk(file_path, sheet_name, start_row, end_row):
 
 
 def detect_datetime_columns(rows, col_count):
-    """
-    Detect columns that contain datetime values
-    """
     datetime_cols = set()
     for row in rows:
         for i in range(min(len(row), col_count)):
@@ -56,9 +56,6 @@ def detect_datetime_columns(rows, col_count):
 
 
 def build_safe_schema(sample_rows):
-    """
-    Build schema that safely handles datetimes
-    """
     col_count = max(len(r) for r in sample_rows)
     columns = [f"col_{i+1}" for i in range(col_count)]
 
@@ -76,9 +73,6 @@ def build_safe_schema(sample_rows):
 
 
 def normalize_rows(rows, col_count, datetime_cols):
-    """
-    Normalize rows so schema never breaks
-    """
     normalized = []
 
     for row in rows:
@@ -110,27 +104,25 @@ def excel_to_parquet_with_progress(excel_file, sheet_name, output_file, progress
             for start in range(1, total_rows + 1, chunk_size)
         ]
 
-        sample_rows = read_excel_chunk(
-            excel_file,
-            sheet_name,
-            row_ranges[0][0],
-            min(row_ranges[0][0] + 5000, row_ranges[0][1])
+        # Schema inference
+        sample_rows = read_excel_chunk_worker(
+            (excel_file, sheet_name, row_ranges[0][0], min(row_ranges[0][0] + 5000, row_ranges[0][1]))
         )
 
         schema, columns, datetime_cols, col_count = build_safe_schema(sample_rows)
 
-        writer = pq.ParquetWriter(
-            output_file,
-            schema,
-            compression="snappy"
-        )
+        writer = pq.ParquetWriter(output_file, schema, compression="snappy")
 
         processed = 0
+        total_chunks = len(row_ranges)
 
         with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            tasks = ((excel_file, sheet_name, s, e) for s, e in row_ranges)
+            tasks = [
+                (excel_file, sheet_name, start, end)
+                for start, end in row_ranges
+            ]
 
-            for rows in executor.map(lambda a: read_excel_chunk(*a), tasks):
+            for rows in executor.map(read_excel_chunk_worker, tasks):
                 if rows:
                     rows = normalize_rows(rows, col_count, datetime_cols)
                     table = pa.Table.from_pylist(
@@ -140,7 +132,7 @@ def excel_to_parquet_with_progress(excel_file, sheet_name, output_file, progress
                     writer.write_table(table)
 
                 processed += 1
-                progress_queue.put((processed, len(row_ranges)))
+                progress_queue.put((processed, total_chunks))
 
         writer.close()
         progress_queue.put(("DONE", output_file))
@@ -152,7 +144,7 @@ def excel_to_parquet_with_progress(excel_file, sheet_name, output_file, progress
 # ================= GUI =================
 def launch_gui():
     root = tk.Tk()
-    root.title("Excel → Parquet (Safe Datetime Handling)")
+    root.title("Excel → Parquet (Multiprocessing Safe)")
     root.geometry("540x300")
     root.resizable(False, False)
 
@@ -191,7 +183,7 @@ def launch_gui():
 
         ttk.Label(
             win,
-            text="Reading Excel (values only)\nHandling datetime safely",
+            text="Processing Excel safely (parallel, values-only)",
             padding=10
         ).pack()
 
@@ -259,6 +251,6 @@ def launch_gui():
     root.mainloop()
 
 
-# ================= RUN =================
+# ================= ENTRY POINT =================
 if __name__ == "__main__":
     launch_gui()
