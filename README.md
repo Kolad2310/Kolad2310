@@ -6,7 +6,7 @@ from docx import Document
 from docx.shared import RGBColor
 
 # =========================================================
-# FORMATTING
+# FORMATTING HELPERS
 # =========================================================
 
 def detect_unit(metric_col):
@@ -54,10 +54,12 @@ def drop_noise(df):
 def select_top(df, metric_col, n=2, min_mn=5):
     if df.empty:
         return df
+
     unit = detect_unit(metric_col)
     df = df.copy()
     df["_mn"] = df["Change"].apply(lambda x: to_mn(x, unit))
     df = df[df["_mn"].abs() >= min_mn]
+
     return df.sort_values("Change", ascending=False).head(n)
 
 # =========================================================
@@ -89,32 +91,27 @@ def build_2level_bullet(row, df_cy, df_py, lvl1, lvl2, metric_col):
 
     return f"{headline} with " + " and ".join(parts)
 
-# =========================================================
-# 3-LEVEL REGION BULLET (KEY FIX)
-# =========================================================
+# ------------------ 3 LEVEL REGION ----------------------
 
 def build_region_bullet(region, df_cy, df_py, metric_col):
-    region_agg = drop_noise(
-        compute_agg(
-            df_cy[df_cy["Region2"] == region],
-            df_py[df_py["Region2"] == region],
-            ["Managed Country"],
-            metric_col
-        )
+    region_df_cy = df_cy[df_cy["Region2"] == region]
+    region_df_py = df_py[df_py["Region2"] == region]
+
+    country_agg = drop_noise(
+        compute_agg(region_df_cy, region_df_py, ["Managed Country"], metric_col)
     )
 
-    countries = select_top(region_agg[region_agg["Change"] > 0], metric_col, 2)
-
-    country_parts = []
+    countries = select_top(country_agg[country_agg["Change"] > 0], metric_col, 2)
+    parts = []
 
     for _, c in countries.iterrows():
         country = c["Managed Country"]
-        country_text = f"{country} {fmt_change_yoy(c['Change'], c['YoY%'], metric_col)}"
+        country_txt = f"{country} {fmt_change_yoy(c['Change'], c['YoY%'], metric_col)}"
 
         biz_agg = drop_noise(
             compute_agg(
-                df_cy[(df_cy["Region2"] == region) & (df_cy["Managed Country"] == country)],
-                df_py[(df_py["Region2"] == region) & (df_py["Managed Country"] == country)],
+                region_df_cy[region_df_cy["Managed Country"] == country],
+                region_df_py[region_df_py["Managed Country"] == country],
                 ["Business Line"],
                 metric_col
             )
@@ -127,11 +124,11 @@ def build_region_bullet(region, df_cy, df_py, metric_col):
                 f"{r['Business Line']} {fmt_change_yoy(r['Change'], r['YoY%'], metric_col)}"
                 for _, r in biz.iterrows()
             ]
-            country_text += " driven by " + " and ".join(biz_parts)
+            country_txt += " driven by " + " and ".join(biz_parts)
 
-        country_parts.append(country_text)
+        parts.append(country_txt)
 
-    return f"{region}: " + "; ".join(country_parts)
+    return f"{region}: " + "; ".join(parts)
 
 # =========================================================
 # SECTION BUILDERS
@@ -181,38 +178,37 @@ def write_word(commentary, output):
     doc = Document()
     doc.add_heading("Global CIB Performance", level=1)
 
-    pattern = re.compile(r"(\+|-)\d+(\.\d+)?(m|bn)|\((\+|-)\d+(\.\d+)?%\)")
+    # Matches +320m, -110m, (18%), (-6%)
+    pattern = re.compile(r"\+?\-?\d+(\.\d+)?(m|bn)|\(\-?\d+(\.\d+)?%\)")
 
     for section, content in commentary.items():
         doc.add_heading(section, level=2)
 
-        for line in content["positive"]:
-            p = doc.add_paragraph(style="List Bullet")
-            idx = 0
-            for m in pattern.finditer(line):
-                start, end = m.span()
-                if start > idx:
-                    p.add_run(line[idx:start])
-                run = p.add_run(line[start:end])
-                run.font.color.rgb = (
-                    RGBColor(0, 176, 80) if line[start] == "+" else RGBColor(192, 0, 0)
-                )
-                idx = end
-            if idx < len(line):
-                p.add_run(line[idx:])
+        for block in ["positive", "negative"]:
+            if block == "negative" and content["negative"]:
+                doc.add_paragraph("Offsetting factors:")
 
-        if content["negative"]:
-            doc.add_paragraph("Offsetting factors:")
-            for line in content["negative"]:
+            for line in content[block]:
                 p = doc.add_paragraph(style="List Bullet")
                 idx = 0
+
                 for m in pattern.finditer(line):
                     start, end = m.span()
+                    token = line[start:end]
+
                     if start > idx:
                         p.add_run(line[idx:start])
-                    run = p.add_run(line[start:end])
-                    run.font.color.rgb = RGBColor(192, 0, 0)
+
+                    run = p.add_run(token)
+
+                    # 🔑 FINAL COLOUR LOGIC
+                    if token.startswith("-") or token.startswith("(-"):
+                        run.font.color.rgb = RGBColor(192, 0, 0)   # Red
+                    else:
+                        run.font.color.rgb = RGBColor(0, 176, 80) # Green
+
                     idx = end
+
                 if idx < len(line):
                     p.add_run(line[idx:])
 
