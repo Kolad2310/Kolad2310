@@ -48,10 +48,10 @@ def drop_noise(df):
     return df[~((df["Change"] == 0) & ((df["YoY%"] == 0) | df["YoY%"].isna()))]
 
 # =========================================================
-# TOP CONTRIBUTOR SELECTION (BY CONTRIBUTION)
+# CONTRIBUTION-BASED SELECTION
 # =========================================================
 
-def select_top(df, metric_col, n=2, min_mn=5):
+def select_level1(df, metric_col, positive=True, min_mn=5):
     if df.empty:
         return df
 
@@ -60,13 +60,13 @@ def select_top(df, metric_col, n=2, min_mn=5):
     df["_mn"] = df["Change"].apply(lambda x: to_mn(x, unit))
     df = df[df["_mn"].abs() >= min_mn]
 
-    return df.sort_values("Change", ascending=False).head(n)
+    return df.sort_values("Change", ascending=not positive)
 
 # =========================================================
 # BULLET BUILDERS
 # =========================================================
 
-def build_2level_bullet(row, df_cy, df_py, lvl1, lvl2, metric_col):
+def build_2level_bullet(row, df_cy, df_py, lvl1, lvl2, metric_col, positive=True):
     name = row[lvl1]
     headline = f"{name}: {fmt_change_yoy(row['Change'], row['YoY%'], metric_col)}"
 
@@ -79,54 +79,67 @@ def build_2level_bullet(row, df_cy, df_py, lvl1, lvl2, metric_col):
         )
     )
 
-    drivers = select_top(lvl2_agg[lvl2_agg["Change"] > 0], metric_col, 2)
+    lvl2_agg = select_level1(
+        lvl2_agg[lvl2_agg["Change"] > 0] if positive else lvl2_agg[lvl2_agg["Change"] < 0],
+        metric_col,
+        positive
+    ).head(2)
 
-    if drivers.empty:
+    if lvl2_agg.empty:
         return headline
 
     parts = [
         f"{r[lvl2]} {fmt_change_yoy(r['Change'], r['YoY%'], metric_col)}"
-        for _, r in drivers.iterrows()
+        for _, r in lvl2_agg.iterrows()
     ]
 
     return f"{headline} with " + " and ".join(parts)
 
-# ------------------ 3 LEVEL REGION ----------------------
+# ------------------ 3-LEVEL REGION ----------------------
 
-def build_region_bullet(region, df_cy, df_py, metric_col):
-    region_df_cy = df_cy[df_cy["Region2"] == region]
-    region_df_py = df_py[df_py["Region2"] == region]
+def build_region_bullet(region, df_cy, df_py, metric_col, positive=True):
+    df_cy_r = df_cy[df_cy["Region2"] == region]
+    df_py_r = df_py[df_py["Region2"] == region]
 
     country_agg = drop_noise(
-        compute_agg(region_df_cy, region_df_py, ["Managed Country"], metric_col)
+        compute_agg(df_cy_r, df_py_r, ["Managed Country"], metric_col)
     )
 
-    countries = select_top(country_agg[country_agg["Change"] > 0], metric_col, 2)
+    country_agg = select_level1(
+        country_agg[country_agg["Change"] > 0] if positive else country_agg[country_agg["Change"] < 0],
+        metric_col,
+        positive
+    ).head(2)
+
     parts = []
 
-    for _, c in countries.iterrows():
+    for _, c in country_agg.iterrows():
         country = c["Managed Country"]
-        country_txt = f"{country} {fmt_change_yoy(c['Change'], c['YoY%'], metric_col)}"
+        txt = f"{country} {fmt_change_yoy(c['Change'], c['YoY%'], metric_col)}"
 
         biz_agg = drop_noise(
             compute_agg(
-                region_df_cy[region_df_cy["Managed Country"] == country],
-                region_df_py[region_df_py["Managed Country"] == country],
+                df_cy_r[df_cy_r["Managed Country"] == country],
+                df_py_r[df_py_r["Managed Country"] == country],
                 ["Business Line"],
                 metric_col
             )
         )
 
-        biz = select_top(biz_agg[biz_agg["Change"] > 0], metric_col, 2)
+        biz_agg = select_level1(
+            biz_agg[biz_agg["Change"] > 0] if positive else biz_agg[biz_agg["Change"] < 0],
+            metric_col,
+            positive
+        ).head(2)
 
-        if not biz.empty:
+        if not biz_agg.empty:
             biz_parts = [
                 f"{r['Business Line']} {fmt_change_yoy(r['Change'], r['YoY%'], metric_col)}"
-                for _, r in biz.iterrows()
+                for _, r in biz_agg.iterrows()
             ]
-            country_txt += " driven by " + " and ".join(biz_parts)
+            txt += " driven by " + " and ".join(biz_parts)
 
-        parts.append(country_txt)
+        parts.append(txt)
 
     return f"{region}: " + "; ".join(parts)
 
@@ -137,49 +150,48 @@ def build_region_bullet(region, df_cy, df_py, metric_col):
 def build_section_2level(df_cy, df_py, metric_col, lvl1, lvl2):
     agg = drop_noise(compute_agg(df_cy, df_py, [lvl1], metric_col))
 
-    pos = select_top(agg[agg["Change"] > 0], metric_col, 2)
-    neg = select_top(agg[agg["Change"] < 0], metric_col, 2)
+    pos = select_level1(agg[agg["Change"] > 0], metric_col, True)
+    neg = select_level1(agg[agg["Change"] < 0], metric_col, False)
 
     bullets_pos = [
-        build_2level_bullet(r, df_cy, df_py, lvl1, lvl2, metric_col)
+        build_2level_bullet(r, df_cy, df_py, lvl1, lvl2, metric_col, True)
         for _, r in pos.iterrows()
     ]
 
     bullets_neg = [
-        f"{r[lvl1]}: {fmt_change_yoy(r['Change'], r['YoY%'], metric_col)}"
+        build_2level_bullet(r, df_cy, df_py, lvl1, lvl2, metric_col, False)
         for _, r in neg.iterrows()
     ]
 
     return bullets_pos, bullets_neg
 
 def build_section_region(df_cy, df_py, metric_col):
-    region_agg = drop_noise(compute_agg(df_cy, df_py, ["Region2"], metric_col))
+    agg = drop_noise(compute_agg(df_cy, df_py, ["Region2"], metric_col))
 
-    pos = select_top(region_agg[region_agg["Change"] > 0], metric_col, 3)
-    neg = select_top(region_agg[region_agg["Change"] < 0], metric_col, 2)
+    pos = select_level1(agg[agg["Change"] > 0], metric_col, True)
+    neg = select_level1(agg[agg["Change"] < 0], metric_col, False)
 
     bullets_pos = [
-        build_region_bullet(r["Region2"], df_cy, df_py, metric_col)
+        build_region_bullet(r["Region2"], df_cy, df_py, metric_col, True)
         for _, r in pos.iterrows()
     ]
 
     bullets_neg = [
-        f"{r['Region2']}: {fmt_change_yoy(r['Change'], r['YoY%'], metric_col)}"
+        build_region_bullet(r["Region2"], df_cy, df_py, metric_col, False)
         for _, r in neg.iterrows()
     ]
 
     return bullets_pos, bullets_neg
 
 # =========================================================
-# WORD WRITER (CORRECT % COLOURING)
+# WORD WRITER (SIGN-AWARE COLOURING)
 # =========================================================
 
 def write_word(commentary, output):
     doc = Document()
     doc.add_heading("Global CIB Performance", level=1)
 
-    # Matches +320m, -110m, (18%), (-6%)
-    pattern = re.compile(r"\+?\-?\d+(\.\d+)?(m|bn)|\(\-?\d+(\.\d+)?%\)")
+    pattern = re.compile(r"\-?\d+(\.\d+)?(m|bn)|\(\-?\d+(\.\d+)?%\)")
 
     for section, content in commentary.items():
         doc.add_heading(section, level=2)
@@ -200,12 +212,10 @@ def write_word(commentary, output):
                         p.add_run(line[idx:start])
 
                     run = p.add_run(token)
-
-                    # 🔑 FINAL COLOUR LOGIC
-                    if token.startswith("-") or token.startswith("(-"):
-                        run.font.color.rgb = RGBColor(192, 0, 0)   # Red
-                    else:
-                        run.font.color.rgb = RGBColor(0, 176, 80) # Green
+                    run.font.color.rgb = (
+                        RGBColor(192, 0, 0) if token.startswith("-") or token.startswith("(-")
+                        else RGBColor(0, 176, 80)
+                    )
 
                     idx = end
 
