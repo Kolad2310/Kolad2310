@@ -50,20 +50,27 @@ def drop_noise(df):
     return df[~((df["Change"] == 0) & ((df["YoY%"] == 0) | df["YoY%"].isna()))]
 
 # =========================================================
-# DRIVER SELECTION
+# DRIVER SELECTION — BY CONTRIBUTION (FIXED)
 # =========================================================
 
-def select_top(df, metric_col, n=2, min_mn=5):
+def select_top_contributors(df, metric_col, n=2, min_mn=5):
     if df.empty:
         return df
+
     unit = detect_unit(metric_col)
     df = df.copy()
-    df["_abs"] = df["Change"].abs().apply(lambda x: to_mn(x, unit))
-    df = df[df["_abs"] >= min_mn]
+
+    # materiality filter
+    df["_mn"] = df["Change"].apply(lambda x: to_mn(x, unit))
+    df = df[df["_mn"].abs() >= min_mn]
+
+    # 🔑 ORDER BY CONTRIBUTION, NOT ABS
+    df = df.sort_values("Change", ascending=False)
+
     return df.head(n)
 
 # =========================================================
-# BULLET LINE BUILDER (CORE FIX)
+# BULLET LINE BUILDER
 # =========================================================
 
 def build_bullet(row, df_cy, df_py, lvl1, lvl2, metric_col):
@@ -79,7 +86,8 @@ def build_bullet(row, df_cy, df_py, lvl1, lvl2, metric_col):
         )
     )
 
-    drivers = select_top(
+    # Positive sub-drivers only
+    drivers = select_top_contributors(
         lvl2_agg[lvl2_agg["Change"] > 0],
         metric_col,
         n=2
@@ -88,11 +96,10 @@ def build_bullet(row, df_cy, df_py, lvl1, lvl2, metric_col):
     if drivers.empty:
         return headline
 
-    parts = []
-    for _, r in drivers.iterrows():
-        parts.append(
-            f"{r[lvl2]} {fmt_change_yoy(r['Change'], r['YoY%'], metric_col)}"
-        )
+    parts = [
+        f"{r[lvl2]} {fmt_change_yoy(r['Change'], r['YoY%'], metric_col)}"
+        for _, r in drivers.iterrows()
+    ]
 
     if len(parts) == 1:
         return f"{headline} driven by {parts[0]}"
@@ -100,12 +107,13 @@ def build_bullet(row, df_cy, df_py, lvl1, lvl2, metric_col):
         return f"{headline} with {parts[0]} and {parts[1]}"
 
 # =========================================================
-# SECTION BUILDER (BULLETS + OFFSET SUBSECTION)
+# SECTION BUILDER
 # =========================================================
 
 def build_section(df_cy, df_py, metric_col, lvl1, lvl2):
     agg = drop_noise(compute_agg(df_cy, df_py, [lvl1], metric_col))
 
+    # 🔑 ORDER BY CONTRIBUTION
     pos = agg[agg["Change"] > 0].sort_values("Change", ascending=False)
     neg = agg[agg["Change"] < 0].sort_values("Change")
 
@@ -115,21 +123,21 @@ def build_section(df_cy, df_py, metric_col, lvl1, lvl2):
     ]
 
     bullets_neg = [
-        build_bullet(r, df_cy, df_py, lvl1, lvl2, metric_col)
+        f"{r[lvl1]}: {fmt_change_yoy(r['Change'], r['YoY%'], metric_col)}"
         for _, r in neg.iterrows()
     ]
 
     return bullets_pos, bullets_neg
 
 # =========================================================
-# WORD WRITER (BULLETS + COLOUR)
+# WORD WRITER (CORRECT COLOURING)
 # =========================================================
 
 def write_word(commentary, output):
     doc = Document()
     doc.add_heading("Global CIB Performance", level=1)
 
-    pattern = re.compile(r"(\+|-)\d+(\.\d+)?(m|bn)|\(\-?\+?\d+(\.\d+)?%\)")
+    pattern = re.compile(r"(\+|-)\d+(\.\d+)?(m|bn)|\((\-|\+)?\d+(\.\d+)?%\)")
 
     for section, content in commentary.items():
         doc.add_heading(section, level=2)
@@ -142,11 +150,13 @@ def write_word(commentary, output):
                 start, end = m.span()
                 if start > idx:
                     p.add_run(line[idx:start])
+
                 run = p.add_run(line[start:end])
                 run.font.color.rgb = (
                     RGBColor(0, 176, 80) if line[start] == "+" else RGBColor(192, 0, 0)
                 )
                 idx = end
+
             if idx < len(line):
                 p.add_run(line[idx:])
 
@@ -160,9 +170,11 @@ def write_word(commentary, output):
                     start, end = m.span()
                     if start > idx:
                         p.add_run(line[idx:start])
+
                     run = p.add_run(line[start:end])
                     run.font.color.rgb = RGBColor(192, 0, 0)
                     idx = end
+
                 if idx < len(line):
                     p.add_run(line[idx:])
 
