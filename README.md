@@ -6,41 +6,38 @@ from docx import Document
 from docx.shared import RGBColor
 
 # =========================================================
-# UNIT + FORMATTING
+# FORMATTING HELPERS
 # =========================================================
 
 def detect_unit(metric_col):
-    t = metric_col.upper()
-    if "$K" in t:
+    col = metric_col.upper()
+    if "$K" in col:
         return "K"
-    if "$M" in t:
+    if "$M" in col:
         return "M"
     return None
 
-def to_mn(value, unit):
-    if pd.isna(value):
-        return value
-    return value / 1000 if unit == "K" else value
+def to_mn(val, unit):
+    if pd.isna(val):
+        return val
+    return val / 1000 if unit == "K" else val
 
-def fmt_mn_bn(mn):
-    if pd.isna(mn):
+def fmt_mn_bn(val):
+    if pd.isna(val):
         return "N/A"
-    sign = "+" if mn > 0 else "-" if mn < 0 else ""
-    mn = abs(mn)
-    if mn >= 1000:
-        return f"{sign}{mn/1000:.1f}bn"
-    return f"{sign}{mn:.0f}m"
+    sign = "+" if val > 0 else "-" if val < 0 else ""
+    val = abs(val)
+    return f"{sign}{val/1000:.1f}bn" if val >= 1000 else f"{sign}{val:.0f}m"
 
 def fmt_change_yoy(change, yoy, metric_col):
     unit = detect_unit(metric_col)
-    mn = to_mn(change, unit)
-    ch = fmt_mn_bn(mn)
+    ch = fmt_mn_bn(to_mn(change, unit))
     if pd.isna(yoy):
-        return f"{ch} / N/A"
-    return f"{ch} / {yoy:.1f}%"
+        return ch
+    return f"{ch} ({yoy:.1f}%)"
 
 # =========================================================
-# AGGREGATION + FILTERING
+# AGGREGATION
 # =========================================================
 
 def compute_agg(df_cy, df_py, group_cols, metric_col):
@@ -55,167 +52,154 @@ def drop_noise(df):
     return df[~((df["Change"] == 0) & ((df["YoY%"] == 0) | df["YoY%"].isna()))]
 
 # =========================================================
-# 90% COVERAGE SELECTION
+# DRIVER SELECTION (SHORT)
 # =========================================================
 
-def select_by_coverage(df, metric_col, pct=0.9, min_mn=5):
+def select_key_drivers(df, metric_col, max_items=2, min_mn=5):
     if df.empty:
         return df
 
     unit = detect_unit(metric_col)
     df = df.copy()
-    df["_abs_mn"] = df["Change"].abs().apply(lambda x: to_mn(x, unit))
-    df = df[df["_abs_mn"] >= min_mn]
+    df["_abs"] = df["Change"].abs().apply(lambda x: to_mn(x, unit))
+    df = df[df["_abs"] >= min_mn]
 
-    if df.empty:
-        return df
+    return df.head(max_items)
 
-    total = df["_abs_mn"].sum()
-    cutoff = total * pct
+# =========================================================
+# WORD-STYLE LINKING
+# =========================================================
 
-    rows, run = [], 0
-    for _, r in df.iterrows():
-        rows.append(r)
-        run += r["_abs_mn"]
-        if run >= cutoff:
-            break
-
-    return pd.DataFrame(rows).drop(columns="_abs_mn")
-
-def join_items(df, name_col, metric_col):
-    return " and ".join(
-        f"{r[name_col]} ({fmt_change_yoy(r['Change'], r['YoY%'], metric_col)})"
+def join_word_style(df, name_col, metric_col):
+    items = [
+        f"{r[name_col]} {fmt_change_yoy(r['Change'], r['YoY%'], metric_col)}"
         for _, r in df.iterrows()
-    )
+    ]
+
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    if len(items) >= 3:
+        return f"{items[0]}, followed by {items[1]} and {items[2]}"
+    return ""
 
 # =========================================================
-# GENERIC HIERARCHICAL COMMENTARY
+# MAIN COMMENTARY BUILDER (WITH OFFSET SUB-PARAGRAPH)
 # =========================================================
 
-def commentary_by_hierarchy(
+def build_section_commentary(
     df_cy,
     df_py,
     metric_col,
-    level1_col,
-    level2_col,
+    lvl1,
+    lvl2,
     title
 ):
-    agg_lvl1 = drop_noise(
-        compute_agg(df_cy, df_py, [level1_col], metric_col)
-    )
+    agg = drop_noise(compute_agg(df_cy, df_py, [lvl1], metric_col))
 
-    pos = agg_lvl1[agg_lvl1["Change"] > 0].sort_values("Change", ascending=False)
-    neg = agg_lvl1[agg_lvl1["Change"] < 0].sort_values("Change")
+    pos = agg[agg["Change"] > 0].sort_values("Change", ascending=False)
+    neg = agg[agg["Change"] < 0].sort_values("Change")
 
-    top = select_by_coverage(pos, metric_col)
-    bottom = select_by_coverage(neg, metric_col)
+    top = select_key_drivers(pos, metric_col, max_items=2)
+    bottom = select_key_drivers(neg, metric_col, max_items=2)
 
-    def describe_lvl1(r):
-        lvl1 = r[level1_col]
-        base = f"{lvl1} ({fmt_change_yoy(r['Change'], r['YoY%'], metric_col)})"
+    def describe(row, positive=True):
+        name = row[lvl1]
 
-        agg_lvl2 = drop_noise(
+        lvl2_agg = drop_noise(
             compute_agg(
-                df_cy[df_cy[level1_col] == lvl1],
-                df_py[df_py[level1_col] == lvl1],
-                [level2_col],
+                df_cy[df_cy[lvl1] == name],
+                df_py[df_py[lvl1] == name],
+                [lvl2],
                 metric_col
             )
         )
 
-        if r["Change"] > 0:
-            drivers = select_by_coverage(
-                agg_lvl2[agg_lvl2["Change"] > 0]
-                .sort_values("Change", ascending=False),
-                metric_col
-            )
-        else:
-            drivers = select_by_coverage(
-                agg_lvl2[agg_lvl2["Change"] < 0]
-                .sort_values("Change"),
-                metric_col
-            )
+        drivers = select_key_drivers(
+            lvl2_agg[lvl2_agg["Change"] > 0]
+            if positive else
+            lvl2_agg[lvl2_agg["Change"] < 0],
+            metric_col,
+            max_items=2
+        )
 
-        return (
-            f"{base} driven by {join_items(drivers, level2_col, metric_col)}"
+        base = f"{name} {fmt_change_yoy(row['Change'], row['YoY%'], metric_col)}"
+        return f"{base}, {join_word_style(drivers, lvl2, metric_col)}" \
             if not drivers.empty else base
-        )
 
-    text = f"{title}: Growth was led by "
-    text += " and ".join(describe_lvl1(r) for _, r in top.iterrows())
+    # Main paragraph
+    main_text = f"{title}: Growth was led by "
+    main_text += " and ".join(describe(r, True) for _, r in top.iterrows())
 
+    # Offsetting sub-paragraph
+    offset_text = None
     if not bottom.empty:
-        offset = " and ".join(describe_lvl1(r) for _, r in bottom.iterrows())
-        text += f", partially offset by {offset}"
+        offset_text = "Offsetting factors: "
+        offset_text += " and ".join(describe(r, False) for _, r in bottom.iterrows())
 
-    return text
+    return main_text, offset_text
+
+# =========================================================
+# BUILD ALL SECTIONS
+# =========================================================
+
+def build_commentary(df_cy, df_py, metric_col):
+    sections = {}
+
+    for title, l1, l2 in [
+        ("By Segment", "Segment", "Business Line"),
+        ("By Product", "Business Line", "Region2"),
+        ("By Region", "Region2", "Business Line"),
+    ]:
+        main, offset = build_section_commentary(
+            df_cy, df_py, metric_col, l1, l2, title
+        )
+        sections[title] = {
+            "main": main,
+            "offset": offset
+        }
+
+    return sections
 
 # =========================================================
 # WORD WRITER (COLORED NUMBERS)
 # =========================================================
 
-def write_commentary_to_word_colored(commentary_dict, output_file):
+def write_word(commentary, output_file):
     doc = Document()
     doc.add_heading("Total Relationship Income Commentary", level=1)
 
-    pattern = re.compile(
-        r"(\+|-)?\d+(\.\d+)?(m|bn)(\s*/\s*\+?\-?\d+(\.\d+)?%)?"
-    )
+    pattern = re.compile(r"(\+|-)\d+(\.\d+)?(m|bn)|\(\-?\+?\d+(\.\d+)?%\)")
 
-    for title, text in commentary_dict.items():
-        doc.add_heading(title, level=2)
-        p = doc.add_paragraph()
-        idx = 0
-        matches = list(pattern.finditer(text))
+    for section, content in commentary.items():
+        doc.add_heading(section, level=2)
 
-        if not matches:
-            p.add_run(text)
-            continue
+        for text in [content["main"], content["offset"]]:
+            if not text:
+                continue
 
-        for m in matches:
-            start, end = m.span()
-            if start > idx:
-                p.add_run(text[idx:start])
+            p = doc.add_paragraph()
+            idx = 0
 
-            run = p.add_run(text[start:end])
-            run.font.color.rgb = (
-                RGBColor(0, 176, 80) if text[start] == "+" else RGBColor(192, 0, 0)
-            )
-            idx = end
+            for m in pattern.finditer(text):
+                start, end = m.span()
+                if start > idx:
+                    p.add_run(text[idx:start])
 
-        if idx < len(text):
-            p.add_run(text[idx:])
+                run = p.add_run(text[start:end])
+                run.font.color.rgb = (
+                    RGBColor(0, 176, 80) if text[start] == "+" else RGBColor(192, 0, 0)
+                )
+                idx = end
+
+            if idx < len(text):
+                p.add_run(text[idx:])
 
     doc.save(output_file)
 
 # =========================================================
-# FINAL DRIVER
-# =========================================================
-
-def build_commentary(df_cy, df_py, metric_col):
-    return {
-        "By Segment": commentary_by_hierarchy(
-            df_cy, df_py, metric_col,
-            level1_col="Segment",
-            level2_col="Business Line",
-            title="By Segment"
-        ),
-        "By Product": commentary_by_hierarchy(
-            df_cy, df_py, metric_col,
-            level1_col="Business Line",
-            level2_col="Region2",
-            title="By Product"
-        ),
-        "By Region": commentary_by_hierarchy(
-            df_cy, df_py, metric_col,
-            level1_col="Region2",
-            level2_col="Business Line",
-            title="By Region"
-        )
-    }
-
-# =======================
 # USAGE
-# =======================
+# =========================================================
 # commentary = build_commentary(df_cy, df_py, "Total Relationship Income ($M)")
-# write_commentary_to_word_colored(commentary, "TRI_Commentary_Final.docx")
+# write_word(commentary, "TRI_Commentary_Final.docx")
