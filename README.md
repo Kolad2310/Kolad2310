@@ -3,7 +3,7 @@ import os
 import shutil
 import time
 import re
-import win32com.client as win32
+import xlwings as xw
 
 
 # ========== CONFIG ==========
@@ -27,35 +27,25 @@ SHEETS_TO_KEEP = [
 
 
 def safe_name(name):
-    """Make entity safe for Windows filename"""
     return re.sub(r'[\\/*?:\[\]]', '_', str(name).strip())
 
 
-def wait_excel(excel):
-    """Wait until Excel finishes refresh/calculation"""
-    while excel.CalculationState != 0:
-        time.sleep(0.5)
-
-
 def get_entities():
-    """Read entity list once from master"""
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
+    """Read entity list once (fast & safe)"""
+    app = xw.App(visible=False)
+    wb = app.books.open(MASTER_PATH, read_only=True)
 
-    wb = excel.Workbooks.Open(MASTER_PATH, ReadOnly=True)
-    ws = wb.Sheets(ENTITY_SHEET)
+    ws = wb.sheets[ENTITY_SHEET]
+    last_row = ws.range(f"{ENTITY_COLUMN}{ws.cells.last_cell.row}").end("up").row
 
-    last_row = ws.Cells(ws.Rows.Count, ENTITY_COLUMN).End(-4162).Row
     entities = []
-
     for r in range(ENTITY_START_ROW, last_row + 1):
-        val = ws.Cells(r, ENTITY_COLUMN).Value
+        val = ws.range(f"{ENTITY_COLUMN}{r}").value
         if val:
             entities.append(safe_name(val))
 
-    wb.Close(False)
-    excel.Quit()
+    wb.close()
+    app.quit()
     return entities
 
 
@@ -65,46 +55,46 @@ def main():
 
     entities = get_entities()
 
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    excel.EnableEvents = False
-    excel.AskToUpdateLinks = False
+    app = xw.App(visible=False)
+    app.display_alerts = False
+    app.screen_updating = False
 
     for entity in entities:
         print(f"\n▶ Processing entity: {entity}")
 
-        # 1️⃣ Copy + rename master immediately
-        output_path = os.path.join(OUTPUT_FOLDER, f"{entity}.xlsx")
-        if os.path.exists(output_path):
-            os.remove(output_path)
+        # 1️⃣ Copy + rename master
+        out_path = os.path.join(OUTPUT_FOLDER, f"{entity}.xlsx")
+        if os.path.exists(out_path):
+            os.remove(out_path)
 
-        shutil.copy2(MASTER_PATH, output_path)
+        shutil.copy2(MASTER_PATH, out_path)
 
-        # 2️⃣ Open copied (already renamed) file
-        wb = excel.Workbooks.Open(output_path, UpdateLinks=1)
+        # 2️⃣ Open copied file
+        wb = app.books.open(out_path)
 
-        # 3️⃣ Set entity in landing page
-        wb.Sheets(LANDING_SHEET).Range(ENTITY_CELL).Value = entity
+        # 3️⃣ Set entity
+        wb.sheets[LANDING_SHEET].range(ENTITY_CELL).value = entity
 
-        # 4️⃣ Refresh
-        wb.RefreshAll()
-        excel.CalculateFull()
-        wait_excel(excel)
+        # 4️⃣ Refresh (xlwings-safe)
+        wb.api.RefreshAll()
+        app.api.CalculateFull()
+
+        # Give Excel time to finish background refresh
+        time.sleep(2)
 
         # 5️⃣ Delete unwanted sheets
-        for ws in list(wb.Sheets):
-            if ws.Name not in SHEETS_TO_KEEP:
-                ws.Delete()
+        for sheet in wb.sheets:
+            if sheet.name not in SHEETS_TO_KEEP:
+                sheet.delete()
 
         # 6️⃣ Save & close
-        wb.Save()
-        wb.Close(False)
+        wb.save()
+        wb.close()
 
-        print(f"   Saved → {output_path}")
+        print(f"   Saved → {out_path}")
 
-    excel.Quit()
-    print("\n✅ All entity files created, renamed, refreshed, and trimmed successfully")
+    app.quit()
+    print("\n✅ All entity files created successfully using xlwings")
 
 
 if __name__ == "__main__":
