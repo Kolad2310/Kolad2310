@@ -5,7 +5,8 @@ import re
 import win32com.client as win32
 
 
-# ============ CONFIG ============
+# ============== CONFIG =================
+
 TEMPLATE_PATH = r"C:\FULL\PATH\Template.xlsx"
 OUTPUT_FOLDER = r"C:\FULL\PATH\output_value_versions"
 
@@ -22,11 +23,18 @@ SHEETS_TO_EXPORT = [
     "SSV Cost Perf view",
     "By Sector YTD"
 ]
-# ================================
+
+# =======================================
 
 
 def sanitize(name):
     return re.sub(r'[\\/*?:\[\]]', '_', str(name).strip())
+
+
+def wait_until_excel_free(excel):
+    """Hard wait until Excel finishes refresh/calculation"""
+    while excel.CalculationState != 0:
+        time.sleep(0.5)
 
 
 def main():
@@ -36,8 +44,8 @@ def main():
     excel = win32.DispatchEx("Excel.Application")
     excel.Visible = False
     excel.DisplayAlerts = False
-    excel.AskToUpdateLinks = False
     excel.EnableEvents = False
+    excel.AskToUpdateLinks = False
 
     wb = excel.Workbooks.Open(TEMPLATE_PATH, UpdateLinks=1)
 
@@ -55,40 +63,52 @@ def main():
             continue
 
         entity = sanitize(entity)
-        print(f"Processing entity: {entity}")
+        print(f"\n▶ Processing entity: {entity}")
 
         # 1️⃣ Set entity
         ws_landing.Range(ENTITY_CELL).Value = entity
 
-        # 2️⃣ Refresh template (SAFE way)
+        # 2️⃣ Refresh template
         wb.RefreshAll()
         excel.CalculateFullRebuild()
+        wait_until_excel_free(excel)
 
-        # ⛔ Wait until Excel is truly free
-        while excel.CalculationState != 0:
-            time.sleep(0.5)
+        # 3️⃣ Create output workbook
+        out_wb = excel.Workbooks.Add()
 
-        # 3️⃣ Copy sheets (Excel-native, safest)
-        wb.Sheets(SHEETS_TO_EXPORT).Copy()
-        new_wb = excel.ActiveWorkbook
+        # Keep exactly one sheet initially
+        while out_wb.Sheets.Count > 1:
+            out_wb.Sheets(1).Delete()
 
-        # 4️⃣ Convert formulas to values (SAFE)
-        for sheet in new_wb.Sheets:
-            used = sheet.UsedRange
+        # 4️⃣ Copy sheets ONE BY ONE
+        for sheet_name in SHEETS_TO_EXPORT:
+            print(f"   Copying sheet: {sheet_name}")
+
+            src_ws = wb.Sheets(sheet_name)
+
+            src_ws.Copy(After=out_wb.Sheets(out_wb.Sheets.Count))
+            tgt_ws = out_wb.Sheets(out_wb.Sheets.Count)
+
+            # Convert to values immediately
+            used = tgt_ws.UsedRange
             used.Value = used.Value
+
+        # Remove initial blank sheet
+        out_wb.Sheets(1).Delete()
 
         # 5️⃣ Save
         save_path = os.path.join(OUTPUT_FOLDER, f"{entity}.xlsx")
         if os.path.exists(save_path):
             os.remove(save_path)
 
-        new_wb.SaveAs(save_path, FileFormat=51)
-        new_wb.Close(False)
+        print(f"   Saving → {save_path}")
+        out_wb.SaveAs(save_path, FileFormat=51)
+        out_wb.Close(False)
 
     wb.Close(False)
     excel.Quit()
 
-    print("✅ COMPLETED WITHOUT COM ERRORS")
+    print("\n✅ ALL FILES CREATED SEQUENTIALLY WITHOUT COM ERRORS")
 
 
 if __name__ == "__main__":
