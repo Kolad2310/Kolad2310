@@ -50,16 +50,19 @@ def main():
 
         print(f"Creating file for: {entity}")
 
-        # Create a fresh workbook
-        new_wb = excel.Workbooks.Add()
+        new_wb = None
 
-        # Delete default sheets
-        while new_wb.Sheets.Count > 0:
-            new_wb.Sheets(1).Delete()
+        for idx, sheet_name in enumerate(SHEETS_TO_COPY):
 
-        # Copy each sheet explicitly
-        for sheet_name in SHEETS_TO_COPY:
-            wb.Sheets(sheet_name).Copy(After=new_wb.Sheets(new_wb.Sheets.Count))
+            if idx == 0:
+                # FIRST sheet: Excel creates a new workbook automatically
+                wb.Sheets(sheet_name).Copy()
+                new_wb = excel.ActiveWorkbook
+            else:
+                # NEXT sheets: append to existing workbook
+                wb.Sheets(sheet_name).Copy(
+                    After=new_wb.Sheets(new_wb.Sheets.Count)
+                )
 
         save_path = os.path.join(OUTPUT_FOLDER, f"{safe_entity}.xlsx")
         new_wb.SaveAs(save_path, FileFormat=51)
@@ -68,7 +71,7 @@ def main():
     wb.Close(False)
     excel.Quit()
 
-    print("✅ Files successfully created in output folder")
+    print("✅ Files created successfully without COM errors")
 
 
 if __name__ == "__main__":
