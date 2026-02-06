@@ -4,8 +4,6 @@ import re
 import win32com.client as win32
 
 
-# ============ USER CONFIG ============
-
 TEMPLATE_PATH = r"C:\Path\To\Template.xlsx"
 OUTPUT_FOLDER = r"C:\Path\To\output_value_versions"
 
@@ -19,8 +17,6 @@ SHEETS_TO_COPY = [
     "SSV Cost Perf view",
     "By Sector YTD"
 ]
-
-# ===================================
 
 
 def sanitize_filename(name):
@@ -37,8 +33,8 @@ def main():
     excel.DisplayAlerts = False
 
     wb = excel.Workbooks.Open(TEMPLATE_PATH)
-
     ws_entity = wb.Sheets(ENTITY_SHEET)
+
     last_row = ws_entity.Cells(
         ws_entity.Rows.Count, ENTITY_COLUMN
     ).End(-4162).Row  # xlUp
@@ -54,9 +50,16 @@ def main():
 
         print(f"Creating file for: {entity}")
 
-        # Copy sheets into new workbook
-        wb.Sheets(SHEETS_TO_COPY).Copy()
-        new_wb = excel.ActiveWorkbook
+        # Create a fresh workbook
+        new_wb = excel.Workbooks.Add()
+
+        # Delete default sheets
+        while new_wb.Sheets.Count > 0:
+            new_wb.Sheets(1).Delete()
+
+        # Copy each sheet explicitly
+        for sheet_name in SHEETS_TO_COPY:
+            wb.Sheets(sheet_name).Copy(After=new_wb.Sheets(new_wb.Sheets.Count))
 
         save_path = os.path.join(OUTPUT_FOLDER, f"{safe_entity}.xlsx")
         new_wb.SaveAs(save_path, FileFormat=51)
@@ -65,7 +68,7 @@ def main():
     wb.Close(False)
     excel.Quit()
 
-    print("✅ All files created successfully")
+    print("✅ Files successfully created in output folder")
 
 
 if __name__ == "__main__":
