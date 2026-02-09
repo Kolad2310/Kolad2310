@@ -5,17 +5,24 @@ import re
 import pythoncom
 import win32com.client as win32
 
+
 # ================= CONFIG =================
 
 MASTER_PATH = r"C:\PATH\Master.xlsx"
 OUTPUT_FOLDER = r"C:\PATH\Output_Entity_Files"
 
-ENTITIES = ["APAC", "EMEA", "INDIA", "AMERICAS", "UK"]
+ENTITIES = [
+    "APAC",
+    "EMEA",
+    "INDIA",
+    "AMERICAS",
+    "UK"
+]
 
 LANDING_SHEET = "Landing Page DB"
 ENTITY_CELL = "F1"
 
-# ONLY output sheets (do NOT touch inputs)
+# Sheets to convert to values (keep formatting)
 OUTPUT_SHEETS = [
     "Landing Page DB",
     "SSV Perf view",
@@ -23,7 +30,7 @@ OUTPUT_SHEETS = [
     "By Sector YTD"
 ]
 
-ROW_CHUNK = 200   # safe chunk size
+ROW_CHUNK = 200  # safe chunk size for PasteSpecial
 
 # =========================================
 
@@ -32,15 +39,22 @@ def safe_name(name):
     return re.sub(r'[\\/*?:\[\]]', '_', str(name).strip())
 
 
-def wait_for_calc(excel):
-    while excel.CalculationState != 0:
-        time.sleep(1)
-
-
-def freeze_sheet_in_chunks(ws, excel):
+def wait_for_refresh_and_calc(excel):
     """
-    Freeze formulas to values safely using PasteSpecial
-    in small row chunks (NO marshaling issues).
+    Wait until:
+    - Refresh is done
+    - Calculation is done
+    """
+    while True:
+        if excel.CalculationState == 0:
+            break
+        time.sleep(2)
+
+
+def freeze_sheet_to_values(ws, excel):
+    """
+    Convert formulas to values using Excel-native PasteSpecial
+    in small chunks (NO marshaling errors)
     """
     xlPasteValues = -4163
 
@@ -61,6 +75,7 @@ def freeze_sheet_in_chunks(ws, excel):
 
 
 def main():
+
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
     pythoncom.CoInitialize()
 
@@ -80,34 +95,40 @@ def main():
         # 2️⃣ Set entity
         wb.Worksheets(LANDING_SHEET).Range(ENTITY_CELL).Value = entity
 
-        # 3️⃣ Full recalculation (Excel-native)
-        excel.CalculateFullRebuild()
-        wait_for_calc(excel)
+        # 3️⃣ Refresh all (Power Query, connections, etc.)
+        wb.RefreshAll()
 
-        # 4️⃣ Save copy
+        # 4️⃣ Wait for refresh + calculation
+        wait_for_refresh_and_calc(excel)
+
+        # 5️⃣ Save a copy
         out_path = os.path.join(OUTPUT_FOLDER, f"{entity_safe}.xlsx")
         if os.path.exists(out_path):
             os.remove(out_path)
 
         wb.SaveCopyAs(out_path)
+
+        # Close master without saving
         wb.Close(False)
 
-        # 5️⃣ Open copied file
+        # 6️⃣ Open copied file
         out_wb = excel.Workbooks.Open(out_path)
 
-        # 6️⃣ Freeze ONLY output sheets
+        # 7️⃣ Convert output sheets to values
         for sheet_name in OUTPUT_SHEETS:
             ws = out_wb.Worksheets(sheet_name)
-            freeze_sheet_in_chunks(ws, excel)
+            freeze_sheet_to_values(ws, excel)
 
+        # 8️⃣ Save & close value version
         out_wb.Save()
         out_wb.Close(False)
 
-        print(f"✔ Created value file: {out_path}")
+        print(f"✔ Value file created: {out_path}")
 
     excel.Quit()
     pythoncom.CoUninitialize()
-    print("\n✅ ALL FILES CREATED SUCCESSFULLY")
+
+    print("\n✅ ALL ENTITY FILES CREATED SUCCESSFULLY")
 
 
 # ================= ENTRY POINT =================
