@@ -20,12 +20,17 @@ ENTITIES = [
     "UK"
 ]
 
+LANDING_SHEET = "Landing Page DB"
+ENTITY_CELL   = "F1"
+
+# Input sheet config: entity column + start row
 INPUT_SHEETS = {
     "P&L": {"entity_col": "E", "start_row": 24},
     "BS":  {"entity_col": "E", "start_row": 22},
     "SD":  {"entity_col": "E", "start_row": 22}
 }
 
+# Sheets whose values must be frozen
 OUTPUT_SHEETS = [
     "Landing Page DB",
     "SSV Perf view",
@@ -37,7 +42,6 @@ OUTPUT_SHEETS = [
 
 
 def normalize(val):
-    """Normalize entity for safe comparison"""
     if pd.isna(val):
         return ""
     return str(val).strip().upper()
@@ -48,7 +52,7 @@ def safe_name(name):
 
 
 def read_input_data():
-    """Read full sheets including headers"""
+    """Read input sheets once into memory"""
     data = {}
     for sheet in INPUT_SHEETS:
         data[sheet] = pd.read_excel(
@@ -60,30 +64,29 @@ def read_input_data():
 
 
 def filter_entity_data(df, entity, entity_col_letter):
-    """Filter rows for one entity (robust match)"""
+    """Robust entity filter"""
     col_idx = ord(entity_col_letter.upper()) - ord("A")
     entity_norm = normalize(entity)
-
-    mask = df.iloc[:, col_idx].apply(normalize) == entity_norm
-    return df.loc[mask]
+    return df[df.iloc[:, col_idx].apply(normalize) == entity_norm]
 
 
 def write_dataframe_to_sheet(sheet, df, start_row):
-    """Write dataframe INCLUDING headers alignment"""
+    """Write values into template input sheet"""
     if df.empty:
         return
 
-    # Clear old content first (important)
-    sheet.range((start_row, 1),
-                (sheet.cells.last_cell.row,
-                 sheet.cells.last_cell.column)).clear_contents()
+    # Clear old data
+    sheet.range(
+        (start_row, 1),
+        (sheet.cells.last_cell.row, sheet.cells.last_cell.column)
+    ).clear_contents()
 
-    # Write values only (no headers row)
+    # Write new data (values only)
     sheet.range((start_row, 1)).value = df.values
 
 
 def freeze_sheet(sheet):
-    """Convert formulas to values (format preserved)"""
+    """Convert formulas to values, keep formatting"""
     used = sheet.used_range
     if used:
         used.value = used.value
@@ -109,9 +112,9 @@ def process_entities():
 
         wb = app.books.open(out_path)
 
-        # ---- Fill input sheets ----
+        # 1️⃣ Fill input sheets with entity-filtered data
         for sheet_name, cfg in INPUT_SHEETS.items():
-            filtered = filter_entity_data(
+            filtered_df = filter_entity_data(
                 input_data[sheet_name],
                 entity,
                 cfg["entity_col"]
@@ -119,14 +122,17 @@ def process_entities():
 
             write_dataframe_to_sheet(
                 wb.sheets[sheet_name],
-                filtered,
+                filtered_df,
                 cfg["start_row"]
             )
 
-        # 🔑 Force calculation (template is small → fast)
+        # 2️⃣ SET ENTITY IN LANDING PAGE (CRITICAL)
+        wb.sheets[LANDING_SHEET].range(ENTITY_CELL).value = entity
+
+        # 3️⃣ FORCE CALC (template calc is fast)
         app.calculate()
 
-        # ---- Freeze output sheets ----
+        # 4️⃣ Freeze output sheets to VALUES
         for sheet_name in OUTPUT_SHEETS:
             freeze_sheet(wb.sheets[sheet_name])
 
@@ -136,7 +142,7 @@ def process_entities():
         print(f"   Saved → {out_path}")
 
     app.quit()
-    print("\n✅ ALL ENTITY FILES CREATED SUCCESSFULLY")
+    print("\n✅ ALL ENTITY FILES CREATED WITH VALUES")
 
 
 # ================= ENTRY POINT =================
