@@ -11,9 +11,14 @@ import xlwings as xw
 MASTER_PATH = r"C:\FULL\PATH\Master.xlsx"
 OUTPUT_FOLDER = r"C:\FULL\PATH\output_files"
 
-ENTITY_SHEET = "Region & Function"
-ENTITY_COLUMN = "C"
-ENTITY_START_ROW = 2
+# 🔹 Explicit list of entities / regions
+ENTITIES = [
+    "APAC",
+    "EMEA",
+    "AMERICAS",
+    "INDIA",
+    "UK"
+]
 
 LANDING_SHEET = "Landing Page DB"
 ENTITY_CELL = "F1"
@@ -33,34 +38,8 @@ def safe_name(name: str) -> str:
     return re.sub(r'[\\/*?:\[\]]', '_', str(name).strip())
 
 
-def get_entities() -> list:
-    """Read entity list once from master (fast & safe)"""
-    app = xw.App(visible=False)
-    app.display_alerts = False
-
-    wb = app.books.open(MASTER_PATH, read_only=True)
-    ws = wb.sheets[ENTITY_SHEET]
-
-    last_row = ws.range(
-        f"{ENTITY_COLUMN}{ws.cells.last_cell.row}"
-    ).end("up").row
-
-    entities = []
-    for r in range(ENTITY_START_ROW, last_row + 1):
-        val = ws.range(f"{ENTITY_COLUMN}{r}").value
-        if val:
-            entities.append(safe_name(val))
-
-    wb.close()
-    app.quit()
-    return entities
-
-
 def freeze_sheet_to_values(sheet: xw.Sheet):
-    """
-    Convert a sheet to values ONLY (formatting preserved)
-    This is safe because it does NOT touch other sheets.
-    """
+    """Convert only the used range to values (format preserved)"""
     used = sheet.used_range
     if used is not None:
         used.value = used.value
@@ -75,13 +54,14 @@ def process_entities(entities: list):
     app.screen_updating = False
 
     for idx, entity in enumerate(entities, start=1):
+        entity = safe_name(entity)
         print(f"[{idx}/{len(entities)}] Processing {entity}")
 
         out_path = os.path.join(OUTPUT_FOLDER, f"{entity}.xlsx")
         if os.path.exists(out_path):
             os.remove(out_path)
 
-        # 1️⃣ Copy master and rename
+        # 1️⃣ Copy master → rename
         shutil.copy2(MASTER_PATH, out_path)
 
         # 2️⃣ Open copied file (Excel refreshes on open)
@@ -90,15 +70,15 @@ def process_entities(entities: list):
         # 3️⃣ Set entity
         wb.sheets[LANDING_SHEET].range(ENTITY_CELL).value = entity
 
-        # 4️⃣ Wait for heavy calculation to finish
-        # (formula-intensive model)
+        # 4️⃣ Wait for heavy recalculation
+        # (keep this high for formula-intensive models)
         time.sleep(10)
 
-        # 5️⃣ Freeze required sheets to VALUES
+        # 5️⃣ Freeze required sheets to values
         for sheet_name in SHEETS_TO_KEEP:
             freeze_sheet_to_values(wb.sheets[sheet_name])
 
-        # 6️⃣ Delete all other (reference) sheets
+        # 6️⃣ Delete reference / calc sheets
         for sheet in wb.sheets:
             if sheet.name not in SHEETS_TO_KEEP:
                 sheet.delete()
@@ -107,7 +87,7 @@ def process_entities(entities: list):
         wb.save()
         wb.close()
 
-        print(f"     Value version saved → {out_path}")
+        print(f"     Value file saved → {out_path}")
 
     app.quit()
 
@@ -115,7 +95,5 @@ def process_entities(entities: list):
 # ================= ENTRY POINT =================
 
 if __name__ == "__main__":
-    entities = get_entities()
-    print(f"Found {len(entities)} entities")
-    process_entities(entities)
-    print("✅ ALL VALUE FILES CREATED SUCCESSFULLY")
+    process_entities(ENTITIES)
+    print("✅ Selected entity value files created successfully")
