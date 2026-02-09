@@ -12,21 +12,21 @@ sheet_to_refresh = ['Landing Page DB', 'Sheet1', 'Sheet2']  # EXACT SHEET NAMES
 # Create output folder
 os.makedirs(output_dir, exist_ok=True)
 
-print("Starting Excel automation...")
+print("Starting Excel automation (NO VISIBLE WORKBOOK)...")
 print(f"Source: {workbook_path}")
 print(f"Output: {output_dir}")
 print(f"Entities: {len(l)}")
 print(f"Sheets: {sheet_to_refresh}")
 print("-" * 50)
 
-# Launch Excel (VISIBLE for debugging, change to False later)
-app = xw.App(visible=True, screen_updating=False, display_alerts=False)
-print("✓ Excel launched")
+# Launch Excel COMPLETELY HIDDEN
+app = xw.App(visible=False, screen_updating=False, display_alerts=False, add_book=False)
+print("✓ Excel launched (invisible)")
 
 try:
-    # Open source workbook
+    # Open source workbook (stays hidden)
     wb = app.books.open(workbook_path)
-    print(f"✓ Workbook opened: {wb.name}")
+    print(f"✓ Workbook opened: {wb.name} (hidden)")
     
     # Show all available sheets
     print("Available sheets:", [s.name for s in wb.sheets])
@@ -50,7 +50,7 @@ try:
             sheet.api.Calculate()
         print(f"  ✓ Recalculated {len(sheet_to_refresh)} sheets")
         
-        # Step 3: Create NEW workbook with copied sheets
+        # Step 3: Create NEW workbook (also hidden)
         new_wb = app.books.add()
         
         # Copy each target sheet (preserves formatting/formulas)
@@ -81,9 +81,12 @@ except Exception as e:
     print(f"\n❌ ERROR: {e}")
     print("FIX:")
     print("1. Check file path exists")
-    print("2. Close all Excel instances") 
+    print("2. Close all Excel instances BEFORE running") 
     print("3. Verify exact sheet names above")
     if 'app' in locals():
-        app.quit()
+        try:
+            app.quit()
+        except:
+            pass
 
-input("\nPress Enter to exit...")  # Keeps window open
+input("\nPress Enter to exit...")  # Keeps console open
