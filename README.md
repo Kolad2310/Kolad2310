@@ -1,9 +1,9 @@
 ```
 import os
-import shutil
 import time
 import re
-import xlwings as xw
+import win32com.client as win32
+import pythoncom
 
 
 # ========== CONFIG ==========
@@ -16,13 +16,6 @@ ENTITY_START_ROW = 2
 
 LANDING_SHEET = "Landing Page DB"
 ENTITY_CELL = "F1"
-
-SHEETS_TO_KEEP = [
-    "Landing Page DB",
-    "SSV Perf view",
-    "SSV Cost Perf view",
-    "By Sector YTD"
-]
 # ============================
 
 
@@ -31,22 +24,64 @@ def safe_name(name):
 
 
 def get_entities():
-    """Read entity list once (fast & safe)"""
-    app = xw.App(visible=False)
-    wb = app.books.open(MASTER_PATH, read_only=True)
+    """Read entity list once using a short-lived Excel session"""
+    excel = win32.DispatchEx("Excel.Application")
+    excel.Visible = False
+    excel.DisplayAlerts = False
 
-    ws = wb.sheets[ENTITY_SHEET]
-    last_row = ws.range(f"{ENTITY_COLUMN}{ws.cells.last_cell.row}").end("up").row
+    wb = excel.Workbooks.Open(MASTER_PATH, ReadOnly=True)
+    ws = wb.Sheets(ENTITY_SHEET)
 
+    last_row = ws.Cells(ws.Rows.Count, ENTITY_COLUMN).End(-4162).Row
     entities = []
+
     for r in range(ENTITY_START_ROW, last_row + 1):
-        val = ws.range(f"{ENTITY_COLUMN}{r}").value
+        val = ws.Cells(r, ENTITY_COLUMN).Value
         if val:
             entities.append(safe_name(val))
 
-    wb.close()
-    app.quit()
+    wb.Close(False)
+    excel.Quit()
     return entities
+
+
+def process_entity(entity):
+    """Process ONE entity in a fresh Excel instance"""
+    pythoncom.CoInitialize()
+
+    excel = win32.DispatchEx("Excel.Application")
+    excel.Visible = False
+    excel.DisplayAlerts = False
+    excel.EnableEvents = False
+    excel.AskToUpdateLinks = False
+    excel.Calculation = -4135  # xlCalculationManual
+
+    wb = excel.Workbooks.Open(MASTER_PATH, UpdateLinks=1)
+
+    # Set entity
+    wb.Sheets(LANDING_SHEET).Range(ENTITY_CELL).Value = entity
+
+    # Refresh & calculate ONCE
+    wb.RefreshAll()
+    excel.CalculateFullRebuild()
+
+    while excel.CalculationState != 0:
+        time.sleep(0.5)
+
+    # 🔒 Convert entire workbook to values (Excel-native, safest)
+    for ws in wb.Worksheets:
+        ws.Cells.Value = ws.Cells.Value
+
+    # Save value version
+    out_path = os.path.join(OUTPUT_FOLDER, f"{entity}.xlsx")
+    if os.path.exists(out_path):
+        os.remove(out_path)
+
+    wb.SaveAs(out_path, FileFormat=51)
+
+    wb.Close(False)
+    excel.Quit()
+    pythoncom.CoUninitialize()
 
 
 def main():
@@ -54,47 +89,13 @@ def main():
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
     entities = get_entities()
+    print(f"Found {len(entities)} entities")
 
-    app = xw.App(visible=False)
-    app.display_alerts = False
-    app.screen_updating = False
+    for i, entity in enumerate(entities, start=1):
+        print(f"\n[{i}/{len(entities)}] Processing {entity}")
+        process_entity(entity)
 
-    for entity in entities:
-        print(f"\n▶ Processing entity: {entity}")
-
-        # 1️⃣ Copy + rename master
-        out_path = os.path.join(OUTPUT_FOLDER, f"{entity}.xlsx")
-        if os.path.exists(out_path):
-            os.remove(out_path)
-
-        shutil.copy2(MASTER_PATH, out_path)
-
-        # 2️⃣ Open copied file
-        wb = app.books.open(out_path)
-
-        # 3️⃣ Set entity
-        wb.sheets[LANDING_SHEET].range(ENTITY_CELL).value = entity
-
-        # 4️⃣ Refresh (xlwings-safe)
-        wb.api.RefreshAll()
-        app.api.CalculateFull()
-
-        # Give Excel time to finish background refresh
-        time.sleep(2)
-
-        # 5️⃣ Delete unwanted sheets
-        for sheet in wb.sheets:
-            if sheet.name not in SHEETS_TO_KEEP:
-                sheet.delete()
-
-        # 6️⃣ Save & close
-        wb.save()
-        wb.close()
-
-        print(f"   Saved → {out_path}")
-
-    app.quit()
-    print("\n✅ All entity files created successfully using xlwings")
+    print("\n✅ ALL 31 VALUE FILES CREATED SUCCESSFULLY")
 
 
 if __name__ == "__main__":
