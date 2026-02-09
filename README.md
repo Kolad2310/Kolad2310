@@ -11,13 +11,7 @@ import pythoncom
 MASTER_PATH = r"C:\PATH\Master.xlsx"
 OUTPUT_FOLDER = r"C:\PATH\Output_Entity_Files"
 
-ENTITIES = [
-    "APAC",
-    "EMEA",
-    "INDIA",
-    "AMERICAS",
-    "UK"
-]
+ENTITIES = ["APAC", "EMEA", "INDIA", "AMERICAS", "UK"]
 
 LANDING_SHEET = "Landing Page DB"
 ENTITY_CELL = "F1"
@@ -34,11 +28,15 @@ def wait_for_calc(excel):
         time.sleep(1)
 
 
-def convert_workbook_to_values(wb):
-    """Freeze entire workbook to values (format preserved)"""
+def convert_workbook_to_values_safe(excel, wb):
+    xlPasteValues = -4163
+
     for ws in wb.Worksheets:
         used = ws.UsedRange
-        used.Value = used.Value
+        used.Copy()
+        used.PasteSpecial(Paste=xlPasteValues)
+
+    excel.CutCopyMode = False
 
 
 def main():
@@ -72,9 +70,9 @@ def main():
 
         wb.SaveCopyAs(out_path)
 
-        # 4️⃣ Open copied file and freeze values
+        # 4️⃣ Open copied file and freeze values SAFELY
         out_wb = excel.Workbooks.Open(out_path)
-        convert_workbook_to_values(out_wb)
+        convert_workbook_to_values_safe(excel, out_wb)
         out_wb.Save()
         out_wb.Close(False)
 
