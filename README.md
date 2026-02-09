@@ -24,7 +24,6 @@ def safe_name(name):
 
 
 def get_entities():
-    """Read entity list once using a short-lived Excel session"""
     excel = win32.DispatchEx("Excel.Application")
     excel.Visible = False
     excel.DisplayAlerts = False
@@ -46,7 +45,6 @@ def get_entities():
 
 
 def process_entity(entity):
-    """Process ONE entity in a fresh Excel instance"""
     pythoncom.CoInitialize()
 
     excel = win32.DispatchEx("Excel.Application")
@@ -54,25 +52,23 @@ def process_entity(entity):
     excel.DisplayAlerts = False
     excel.EnableEvents = False
     excel.AskToUpdateLinks = False
-    excel.Calculation = -4135  # xlCalculationManual
 
     wb = excel.Workbooks.Open(MASTER_PATH, UpdateLinks=1)
 
     # Set entity
     wb.Sheets(LANDING_SHEET).Range(ENTITY_CELL).Value = entity
 
-    # Refresh & calculate ONCE
+    # Refresh + full rebuild (SAFE)
     wb.RefreshAll()
     excel.CalculateFullRebuild()
 
     while excel.CalculationState != 0:
         time.sleep(0.5)
 
-    # 🔒 Convert entire workbook to values (Excel-native, safest)
+    # Convert entire workbook to values
     for ws in wb.Worksheets:
         ws.Cells.Value = ws.Cells.Value
 
-    # Save value version
     out_path = os.path.join(OUTPUT_FOLDER, f"{entity}.xlsx")
     if os.path.exists(out_path):
         os.remove(out_path)
@@ -92,10 +88,10 @@ def main():
     print(f"Found {len(entities)} entities")
 
     for i, entity in enumerate(entities, start=1):
-        print(f"\n[{i}/{len(entities)}] Processing {entity}")
+        print(f"[{i}/{len(entities)}] Processing {entity}")
         process_entity(entity)
 
-    print("\n✅ ALL 31 VALUE FILES CREATED SUCCESSFULLY")
+    print("✅ All files created successfully")
 
 
 if __name__ == "__main__":
