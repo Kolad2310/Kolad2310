@@ -1,37 +1,130 @@
-```
-import pandas as pd
-import shutil
-import xlwings as xw
 import os
+import shutil
+import pandas as pd
+import xlwings as xw
+import re
 
-MASTER_RESULTS = r"C:\path\Master.xlsx"
-TEMPLATE_PATH  = r"C:\path\Presentation_Template.xlsx"
-OUTPUT_FOLDER  = r"C:\path\Output"
 
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+# ================= CONFIG =================
 
-# Read calculated results ONCE
-df = pd.read_excel(MASTER_RESULTS, sheet_name="MODEL_OUTPUT")
+INPUT_DATA_FILE = r"C:\PATH\Input_Data.xlsx"
+TEMPLATE_FILE   = r"C:\PATH\Template.xlsx"
+OUTPUT_FOLDER   = r"C:\PATH\Output_Entity_Files"
 
-app = xw.App(visible=False)
-app.display_alerts = False
+ENTITIES = [
+    "APAC",
+    "EMEA",
+    "INDIA",
+    "AMERICAS",
+    "UK"
+]
 
-entities = df["Entity"].unique()
+# Sheet configuration: sheet_name, entity_column, start_row
+INPUT_SHEETS = {
+    "P&L": {"entity_col": "E", "start_row": 24},
+    "BS":  {"entity_col": "E", "start_row": 22},
+    "SD":  {"entity_col": "E", "start_row": 22}
+}
 
-for entity in entities:
-    out_path = os.path.join(OUTPUT_FOLDER, f"{entity}.xlsx")
-    shutil.copy2(TEMPLATE_PATH, out_path)
+# Output sheets to freeze
+OUTPUT_SHEETS = [
+    "Landing Page DB",
+    "SSV Perf view",
+    "SSV Cost Perf view",
+    "By Sector YTD"
+]
 
-    wb = app.books.open(out_path)
+# =========================================
 
-    entity_df = df[df["Entity"] == entity]
 
-    # Example injections (you control mapping)
-    wb.sheets["SSV Perf view"].range("B5").value = entity_df["Revenue"].iloc[0]
-    wb.sheets["SSV Cost Perf view"].range("C7").value = entity_df["Cost"].iloc[0]
-    wb.sheets["By Sector YTD"].range("D10").value = entity_df["YTD_Rev"].iloc[0]
+def safe_name(name):
+    return re.sub(r'[\\/*?:\[\]]', '_', str(name).strip())
 
-    wb.save()
-    wb.close()
 
-app.quit()
+def read_input_data():
+    """Read input sheets once into memory (FAST)"""
+    data = {}
+    for sheet in INPUT_SHEETS:
+        data[sheet] = pd.read_excel(
+            INPUT_DATA_FILE,
+            sheet_name=sheet,
+            header=None
+        )
+    return data
+
+
+def filter_entity_data(df, entity, entity_col_letter, start_row):
+    """Filter rows for one entity (1-based Excel row logic)"""
+    col_idx = ord(entity_col_letter.upper()) - ord("A")
+    df_data = df.iloc[start_row-1:]          # start row
+    return df_data[df_data.iloc[:, col_idx] == entity]
+
+
+def write_dataframe_to_sheet(sheet, df, start_row):
+    """Write dataframe values into template input sheet"""
+    if df.empty:
+        return
+
+    sheet.range((start_row, 1)).value = df.values
+
+
+def freeze_sheet(sheet):
+    """Convert sheet formulas to values (format preserved)"""
+    used = sheet.used_range
+    if used:
+        used.value = used.value
+
+
+def process_entities():
+
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+    print("📖 Reading input data once...")
+    input_data = read_input_data()
+
+    app = xw.App(visible=False)
+    app.display_alerts = False
+    app.screen_updating = False
+
+    for idx, entity in enumerate(ENTITIES, start=1):
+        entity = safe_name(entity)
+        print(f"\n[{idx}/{len(ENTITIES)}] Processing {entity}")
+
+        out_path = os.path.join(OUTPUT_FOLDER, f"{entity}.xlsx")
+        shutil.copy2(TEMPLATE_FILE, out_path)
+
+        wb = app.books.open(out_path)
+
+        # --- Fill input sheets ---
+        for sheet_name, cfg in INPUT_SHEETS.items():
+            print(f"   Filling {sheet_name}")
+            filtered = filter_entity_data(
+                input_data[sheet_name],
+                entity,
+                cfg["entity_col"],
+                cfg["start_row"]
+            )
+
+            write_dataframe_to_sheet(
+                wb.sheets[sheet_name],
+                filtered,
+                cfg["start_row"]
+            )
+
+        # --- Freeze output sheets ---
+        for sheet_name in OUTPUT_SHEETS:
+            freeze_sheet(wb.sheets[sheet_name])
+
+        wb.save()
+        wb.close()
+
+        print(f"   Saved → {out_path}")
+
+    app.quit()
+    print("\n✅ ALL ENTITY FILES CREATED SUCCESSFULLY")
+
+
+# ================= ENTRY POINT =================
+
+if __name__ == "__main__":
+    process_entities()
