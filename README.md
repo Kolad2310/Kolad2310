@@ -1,154 +1,95 @@
 ```
 import os
-import shutil
-import pandas as pd
-import xlwings as xw
+import time
 import re
+import win32com.client as win32
+import pythoncom
 
 
 # ================= CONFIG =================
 
-INPUT_DATA_FILE = r"C:\PATH\Input_Data.xlsx"
-TEMPLATE_FILE   = r"C:\PATH\Template.xlsx"
-OUTPUT_FOLDER   = r"C:\PATH\Output_Entity_Files"
+MASTER_PATH = r"C:\PATH\Master.xlsx"
+OUTPUT_FOLDER = r"C:\PATH\Output_Entity_Files"
 
-ENTITIES = ["APAC", "EMEA", "INDIA", "AMERICAS", "UK"]
-
-LANDING_SHEET = "Landing Page DB"
-ENTITY_CELL   = "F1"
-
-# Absolute Excel layout (DO NOT CHANGE)
-INPUT_SHEETS = {
-    "P&L": {"entity_col_idx": 4, "header_row": 23},  # Col E = index 4
-    "BS":  {"entity_col_idx": 4, "header_row": 21},
-    "SD":  {"entity_col_idx": 4, "header_row": 21}
-}
-
-OUTPUT_SHEETS = [
-    "Landing Page DB",
-    "SSV Perf view",
-    "SSV Cost Perf view",
-    "By Sector YTD"
+ENTITIES = [
+    "APAC",
+    "EMEA",
+    "INDIA",
+    "AMERICAS",
+    "UK"
 ]
 
+LANDING_SHEET = "Landing Page DB"
+ENTITY_CELL = "F1"
+
 # =========================================
-
-
-def normalize(v):
-    if pd.isna(v):
-        return ""
-    return str(v).strip().upper()
 
 
 def safe_name(name):
     return re.sub(r'[\\/*?:\[\]]', '_', str(name).strip())
 
 
-def read_input_raw():
-    """Read sheets as raw Excel grids (NO headers)"""
-    data = {}
-    for sheet in INPUT_SHEETS:
-        data[sheet] = pd.read_excel(
-            INPUT_DATA_FILE,
-            sheet_name=sheet,
-            header=None
-        )
-    return data
+def wait_for_calc(excel):
+    while excel.CalculationState != 0:
+        time.sleep(1)
 
 
-def filter_rows(df, entity, entity_col_idx, header_row):
-    """
-    Filter rows strictly BELOW header_row
-    and where column E matches entity
-    """
-    entity_norm = normalize(entity)
-
-    data_only = df.iloc[header_row:]  # rows below header
-    mask = data_only.iloc[:, entity_col_idx].apply(normalize) == entity_norm
-
-    return data_only.loc[mask]
+def convert_workbook_to_values(wb):
+    """Freeze entire workbook to values (format preserved)"""
+    for ws in wb.Worksheets:
+        used = ws.UsedRange
+        used.Value = used.Value
 
 
-def write_rows(sheet, rows_df, header_row):
-    """
-    Write raw rows BELOW header row
-    preserving exact Excel layout
-    """
-    start_row = header_row + 1
-
-    # Clear everything below header
-    sheet.range(
-        (start_row, 1),
-        (sheet.cells.last_cell.row, sheet.cells.last_cell.column)
-    ).clear_contents()
-
-    if rows_df.empty:
-        return
-
-    sheet.range((start_row, 1)).value = rows_df.values
-
-
-def freeze_sheet(sheet):
-    used = sheet.used_range
-    if used:
-        used.value = used.value
-
-
-def process_entities():
+def main():
 
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    pythoncom.CoInitialize()
 
-    print("📖 Reading input data once (raw mode)...")
-    input_data = read_input_raw()
+    excel = win32.DispatchEx("Excel.Application")
+    excel.Visible = False
+    excel.DisplayAlerts = False
+    excel.EnableEvents = False
+    excel.AskToUpdateLinks = False
 
-    app = xw.App(visible=False)
-    app.display_alerts = False
-    app.screen_updating = False
-
-    for i, entity in enumerate(ENTITIES, start=1):
+    for idx, entity in enumerate(ENTITIES, start=1):
         entity_safe = safe_name(entity)
-        print(f"\n[{i}/{len(ENTITIES)}] Processing {entity_safe}")
+        print(f"\n[{idx}/{len(ENTITIES)}] Processing {entity_safe}")
 
+        wb = excel.Workbooks.Open(MASTER_PATH, UpdateLinks=1)
+
+        # 1️⃣ Set entity
+        wb.Worksheets(LANDING_SHEET).Range(ENTITY_CELL).Value = entity
+
+        # 2️⃣ Full Excel-native recalculation
+        excel.CalculateFullRebuild()
+        wait_for_calc(excel)
+
+        # 3️⃣ Save copy
         out_path = os.path.join(OUTPUT_FOLDER, f"{entity_safe}.xlsx")
-        shutil.copy2(TEMPLATE_FILE, out_path)
+        if os.path.exists(out_path):
+            os.remove(out_path)
 
-        wb = app.books.open(out_path)
+        wb.SaveCopyAs(out_path)
 
-        # 1️⃣ Fill P&L / BS / SD inputs
-        for sheet_name, cfg in INPUT_SHEETS.items():
-            rows = filter_rows(
-                input_data[sheet_name],
-                entity,
-                cfg["entity_col_idx"],
-                cfg["header_row"]
-            )
+        # 4️⃣ Open copied file and freeze values
+        out_wb = excel.Workbooks.Open(out_path)
+        convert_workbook_to_values(out_wb)
+        out_wb.Save()
+        out_wb.Close(False)
 
-            write_rows(
-                wb.sheets[sheet_name],
-                rows,
-                cfg["header_row"]
-            )
+        # 5️⃣ Close master WITHOUT saving
+        wb.Close(False)
 
-        # 2️⃣ Set entity control cell (CRITICAL)
-        wb.sheets[LANDING_SHEET].range(ENTITY_CELL).value = entity
+        print(f"✔ Saved value version → {out_path}")
 
-        # 3️⃣ Calculate (template calc is fast)
-        app.calculate()
+    excel.Quit()
+    pythoncom.CoUninitialize()
 
-        # 4️⃣ Freeze outputs
-        for s in OUTPUT_SHEETS:
-            freeze_sheet(wb.sheets[s])
-
-        wb.save()
-        wb.close()
-
-        print(f"   ✔ Saved {entity_safe}.xlsx")
-
-    app.quit()
-    print("\n✅ ALL ENTITY FILES CREATED WITH VALUES")
+    print("\n✅ ALL ENTITY FILES CREATED SUCCESSFULLY")
 
 
 # ================= ENTRY POINT =================
 
 if __name__ == "__main__":
-    process_entities()
+    main()
