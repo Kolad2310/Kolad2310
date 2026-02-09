@@ -3,50 +3,87 @@ import xlwings as xw
 import os
 import time
 
-# Test inputs - UPDATE THESE
-workbook_path = r'C:\path\to\your\workbook.xlsx'  # ← CRITICAL: Fix this path
-output_dir = r'C:\path\to\output'
-l = ['test1', 'test2']  # Start small
-sheet_to_refresh = ['Landing Page DB']  # Your exact sheet names
+# === UPDATE THESE PATHS AND LISTS ===
+workbook_path = r'C:\path\to\your\workbook.xlsx'  # YOUR SOURCE FILE
+output_dir = r'C:\path\to\output'                 # OUTPUT FOLDER
+l = ['entity1', 'entity2', 'entity3']             # YOUR 31 ENTITIES HERE
+sheet_to_refresh = ['Landing Page DB', 'Sheet1', 'Sheet2']  # EXACT SHEET NAMES
 
-print(f"Starting debug... Path exists: {os.path.exists(workbook_path)}")
-print(f"Sheet names to refresh: {sheet_to_refresh}")
+# Create output folder
+os.makedirs(output_dir, exist_ok=True)
+
+print("Starting Excel automation...")
+print(f"Source: {workbook_path}")
+print(f"Output: {output_dir}")
+print(f"Entities: {len(l)}")
+print(f"Sheets: {sheet_to_refresh}")
+print("-" * 50)
+
+# Launch Excel (VISIBLE for debugging, change to False later)
+app = xw.App(visible=True, screen_updating=False, display_alerts=False)
+print("✓ Excel launched")
 
 try:
-    app = xw.App(visible=True)  # VISIBLE for debugging
-    print("✓ Excel app launched")
-    
+    # Open source workbook
     wb = app.books.open(workbook_path)
     print(f"✓ Workbook opened: {wb.name}")
     
-    # List ALL sheets to verify names
+    # Show all available sheets
     print("Available sheets:", [s.name for s in wb.sheets])
     
+    # Get landing sheet
     landing_sheet = wb.sheets['Landing Page DB']
-    print("✓ Landing sheet found")
+    print("✓ Landing Page DB found")
     
-    for i, value in enumerate(l):
-        print(f"\n--- Processing {value} (#{i+1}) ---")
+    # Process each entity
+    for i, entity in enumerate(l):
+        print(f"\n[{i+1}/{len(l)}] Processing '{entity}'...")
         start_time = time.time()
         
-        # Update F1
-        landing_sheet.range('F1').value = value
-        print(f"✓ F1 updated to: {value}")
+        # Step 1: Update F1
+        landing_sheet.range('F1').value = entity
+        print(f"  ✓ F1 = {entity}")
         
-        # Force full recalc (safer for debug)
-        wb.api.Calculate()
-        print("✓ Workbook recalculated")
+        # Step 2: Recalculate target sheets only
+        for sheet_name in sheet_to_refresh:
+            sheet = wb.sheets[sheet_name]
+            sheet.api.Calculate()
+        print(f"  ✓ Recalculated {len(sheet_to_refresh)} sheets")
         
-        # Simple save-as instead of complex copy
-        versioned_name = f'version_{value}_{i+1}.xlsx'
-        output_path = os.path.join(output_dir, versioned_name)
-        wb.save(output_path)
-        print(f"✓ SAVED: {versioned_name} ({time.time()-start_time:.1f}s)")
+        # Step 3: Create NEW workbook with copied sheets
+        new_wb = app.books.add()
+        
+        # Copy each target sheet (preserves formatting/formulas)
+        for j, sheet_name in enumerate(sheet_to_refresh):
+            source_sheet = wb.sheets[sheet_name]
+            source_sheet.api.Copy(Before=new_wb.sheets[0].api)
+            print(f"  ✓ Copied {sheet_name}")
+        
+        # Delete default empty sheet
+        new_wb.sheets[0].delete()
+        
+        # Step 4: Save versioned file
+        filename = f"version_{entity}_{i+1:02d}.xlsx"
+        output_path = os.path.join(output_dir, filename)
+        new_wb.save(output_path)
+        new_wb.close()
+        
+        elapsed = time.time() - start_time
+        print(f"  ✓ SAVED: {filename} ({elapsed:.1f}s)")
     
+    # Cleanup
     wb.close()
     app.quit()
-    print("\n🎉 SUCCESS! Check output folder.")
-    
+    print("\n🎉 ALL FILES COMPLETED!")
+    print(f"Check folder: {output_dir}")
+
 except Exception as e:
-    print(f"❌ ERROR: {e}")
-    print("Check: 1) File path, 2) Excel closed, 3) Sheet names exact")
+    print(f"\n❌ ERROR: {e}")
+    print("FIX:")
+    print("1. Check file path exists")
+    print("2. Close all Excel instances") 
+    print("3. Verify exact sheet names above")
+    if 'app' in locals():
+        app.quit()
+
+input("\nPress Enter to exit...")  # Keeps window open
