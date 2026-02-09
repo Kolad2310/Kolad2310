@@ -1,93 +1,43 @@
 ```
+import xlwings as xw
 import os
-import time
-import re
-import win32com.client as win32
-import pythoncom
 
+# User inputs
+workbook_path = r'C:\path\to\your\workbook.xlsx'  # Adjust path
+l = ['value1', 'value2', 'value3']  # Your list
+sheet_to_refresh = ['Landing Page DB', 'Sheet1', 'Sheet2']  # Only these
+output_dir = r'C:\path\to\output'  # Folder for versions
+os.makedirs(output_dir, exist_ok=True)
 
-# ================= CONFIG =================
+# Open workbook (invisible)
+app = xw.App(visible=False)
+wb = app.books.open(workbook_path)
 
-MASTER_PATH = r"C:\PATH\Master.xlsx"
-OUTPUT_FOLDER = r"C:\PATH\Output_Entity_Files"
+# Get Landing Page DB sheet
+landing_sheet = wb.sheets['Landing Page DB']
 
-ENTITIES = ["APAC", "EMEA", "INDIA", "AMERICAS", "UK"]
+for i, value in enumerate(l):
+    # Update F1
+    landing_sheet.range('F1').value = value
+    
+    # Recalculate only target sheets (triggers formula refresh)
+    for sheet_name in sheet_to_refresh:
+        sheet = wb.sheets[sheet_name]
+        sheet.api.Calculate()  # Sheet-level recalc[web:13]
+    
+    # Create new wb with copied refreshed sheets (preserves formatting)
+    new_wb = app.books.add()
+    for sheet_name in sheet_to_refresh:
+        wb.sheets[sheet_name].api.Copy(Before=new_wb.sheets[0].api)
+    
+    # Delete default sheet
+    new_wb.sheets[0].delete()
+    
+    # Save versioned file
+    versioned_name = f'version_{value}_{i+1}.xlsx'
+    new_wb.save(os.path.join(output_dir, versioned_name))
+    new_wb.close()
 
-LANDING_SHEET = "Landing Page DB"
-ENTITY_CELL = "F1"
-
-# =========================================
-
-
-def safe_name(name):
-    return re.sub(r'[\\/*?:\[\]]', '_', str(name).strip())
-
-
-def wait_for_calc(excel):
-    while excel.CalculationState != 0:
-        time.sleep(1)
-
-
-def convert_workbook_to_values_safe(excel, wb):
-    xlPasteValues = -4163
-
-    for ws in wb.Worksheets:
-        used = ws.UsedRange
-        used.Copy()
-        used.PasteSpecial(Paste=xlPasteValues)
-
-    excel.CutCopyMode = False
-
-
-def main():
-
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-    pythoncom.CoInitialize()
-
-    excel = win32.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    excel.EnableEvents = False
-    excel.AskToUpdateLinks = False
-
-    for idx, entity in enumerate(ENTITIES, start=1):
-        entity_safe = safe_name(entity)
-        print(f"\n[{idx}/{len(ENTITIES)}] Processing {entity_safe}")
-
-        wb = excel.Workbooks.Open(MASTER_PATH, UpdateLinks=1)
-
-        # 1️⃣ Set entity
-        wb.Worksheets(LANDING_SHEET).Range(ENTITY_CELL).Value = entity
-
-        # 2️⃣ Full Excel-native recalculation
-        excel.CalculateFullRebuild()
-        wait_for_calc(excel)
-
-        # 3️⃣ Save copy
-        out_path = os.path.join(OUTPUT_FOLDER, f"{entity_safe}.xlsx")
-        if os.path.exists(out_path):
-            os.remove(out_path)
-
-        wb.SaveCopyAs(out_path)
-
-        # 4️⃣ Open copied file and freeze values SAFELY
-        out_wb = excel.Workbooks.Open(out_path)
-        convert_workbook_to_values_safe(excel, out_wb)
-        out_wb.Save()
-        out_wb.Close(False)
-
-        # 5️⃣ Close master WITHOUT saving
-        wb.Close(False)
-
-        print(f"✔ Saved value version → {out_path}")
-
-    excel.Quit()
-    pythoncom.CoUninitialize()
-
-    print("\n✅ ALL ENTITY FILES CREATED SUCCESSFULLY")
-
-
-# ================= ENTRY POINT =================
-
-if __name__ == "__main__":
-    main()
+# Cleanup
+wb.close()
+app.quit()
