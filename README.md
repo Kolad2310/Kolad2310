@@ -29,15 +29,12 @@ SHEETS_TO_KEEP = [
 
 
 def safe_name(name: str) -> str:
-    """Make entity safe for Windows filenames"""
+    """Make entity safe for Windows filename"""
     return re.sub(r'[\\/*?:\[\]]', '_', str(name).strip())
 
 
 def get_entities() -> list:
-    """
-    Read entity list ONCE from master file.
-    This is fast and safe.
-    """
+    """Read entity list once from master (fast & safe)"""
     app = xw.App(visible=False)
     app.display_alerts = False
 
@@ -59,17 +56,18 @@ def get_entities() -> list:
     return entities
 
 
+def freeze_sheet_to_values(sheet: xw.Sheet):
+    """
+    Convert a sheet to values ONLY (formatting preserved)
+    This is safe because it does NOT touch other sheets.
+    """
+    used = sheet.used_range
+    if used is not None:
+        used.value = used.value
+
+
 def process_entities(entities: list):
-    """
-    Main processing loop:
-    - copy master
-    - rename to entity.xlsx
-    - open (Excel refreshes automatically)
-    - set entity
-    - wait for calc
-    - delete unwanted sheets
-    - save & close
-    """
+
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
     app = xw.App(visible=False)
@@ -80,11 +78,10 @@ def process_entities(entities: list):
         print(f"[{idx}/{len(entities)}] Processing {entity}")
 
         out_path = os.path.join(OUTPUT_FOLDER, f"{entity}.xlsx")
-
         if os.path.exists(out_path):
             os.remove(out_path)
 
-        # 1️⃣ Copy master and rename immediately
+        # 1️⃣ Copy master and rename
         shutil.copy2(MASTER_PATH, out_path)
 
         # 2️⃣ Open copied file (Excel refreshes on open)
@@ -93,20 +90,24 @@ def process_entities(entities: list):
         # 3️⃣ Set entity
         wb.sheets[LANDING_SHEET].range(ENTITY_CELL).value = entity
 
-        # 4️⃣ Give Excel time to finish recalculation
-        # (formula-heavy model needs this)
+        # 4️⃣ Wait for heavy calculation to finish
+        # (formula-intensive model)
         time.sleep(10)
 
-        # 5️⃣ Delete unwanted sheets
+        # 5️⃣ Freeze required sheets to VALUES
+        for sheet_name in SHEETS_TO_KEEP:
+            freeze_sheet_to_values(wb.sheets[sheet_name])
+
+        # 6️⃣ Delete all other (reference) sheets
         for sheet in wb.sheets:
             if sheet.name not in SHEETS_TO_KEEP:
                 sheet.delete()
 
-        # 6️⃣ Save & close
+        # 7️⃣ Save & close
         wb.save()
         wb.close()
 
-        print(f"     Saved → {out_path}")
+        print(f"     Value version saved → {out_path}")
 
     app.quit()
 
@@ -117,4 +118,4 @@ if __name__ == "__main__":
     entities = get_entities()
     print(f"Found {len(entities)} entities")
     process_entities(entities)
-    print("✅ ALL FILES CREATED SUCCESSFULLY")
+    print("✅ ALL VALUE FILES CREATED SUCCESSFULLY")
