@@ -1,67 +1,88 @@
 ```
-import os
-import xlwings as xw
-from pywintypes import com_error
+import pandas as pd
+from pathlib import Path
 
-SOURCE_FOLDER = r"C:\input_excels"
-TARGET_FOLDER = r"C:\value_excels"
+# ---------------- CONFIG ----------------
+input_files = [
+    r"C:\data\file1.xlsx",
+    r"C:\data\file2.xlsx",
+    r"C:\data\file3.xlsx",
+    r"C:\data\file4.xlsx",
+]
 
-# 👇 Only these sheets will remain in output
-L = ["Sheet1", "Summary", "F1 Landing Page DB"]
+output_file = r"C:\data\combined_output.xlsx"
 
-os.makedirs(TARGET_FOLDER, exist_ok=True)
+HEADER_ROWS = {
+    "P&L": 22,   # Excel row 23
+    "BS": 20,    # Excel row 21
+    "SD": 20
+}
+# ----------------------------------------
 
-app = xw.App(visible=False)
-app.display_alerts = False
-app.screen_updating = False
 
-for file in os.listdir(SOURCE_FOLDER):
+def process_sheet(sheet_name, header_row):
+    """Returns prefix_df, header, combined_data_df"""
+    combined_data = []
+    prefix_df = None
+    header = None
 
-    # 🚫 Skip Excel temp files
-    if file.startswith("~$"):
-        continue
+    for i, file in enumerate(input_files):
+        # Read entire sheet without headers
+        df_raw = pd.read_excel(file, sheet_name=sheet_name, header=None)
 
-    if not file.lower().endswith((".xlsx", ".xlsm", ".xls")):
-        continue
+        if i == 0:
+            # Rows before header → keep as-is
+            prefix_df = df_raw.iloc[:header_row]
 
-    print(f"\nProcessing file: {file}")
-    wb = app.books.open(os.path.join(SOURCE_FOLDER, file))
+            # Extract header
+            header = df_raw.iloc[header_row].tolist()
 
-    # --- 1️⃣ Lift-and-shift ONLY for sheets in L ---
-    for sheet in wb.sheets:
-        if sheet.name not in L:
-            continue
+        # Extract data below header
+        data_df = df_raw.iloc[header_row + 1:].copy()
+        data_df.columns = header
 
-        try:
-            sheet.api.Cells.Copy()
-            sheet.api.Cells.PasteSpecial(Paste=-4122)  # xlPasteFormats
-            sheet.api.Cells.PasteSpecial(Paste=-4163)  # xlPasteValues
+        combined_data.append(data_df)
 
-        except com_error as e:
-            print(
-                f"❌ COM ERROR\n"
-                f"   File  : {file}\n"
-                f"   Sheet : {sheet.name}\n"
-                f"   Cell  : Cells (entire sheet)\n"
-                f"   Error : {e}"
-            )
+    combined_data_df = pd.concat(combined_data, ignore_index=True)
+    return prefix_df, header, combined_data_df
 
-    # --- 2️⃣ Delete all other sheets ---
-    for sheet in wb.sheets:
-        if sheet.name not in L:
-            try:
-                sheet.delete()
-            except com_error as e:
-                print(
-                    f"❌ FAILED TO DELETE SHEET\n"
-                    f"   File  : {file}\n"
-                    f"   Sheet : {sheet.name}\n"
-                    f"   Error : {e}"
-                )
 
-    wb.save(os.path.join(TARGET_FOLDER, file))
-    wb.close()
+# ---------------- WRITE OUTPUT ----------------
+with pd.ExcelWriter(output_file, engine="xlsxwriter") as writer:
+    for sheet_name, header_row in HEADER_ROWS.items():
+        prefix_df, header, combined_data_df = process_sheet(sheet_name, header_row)
 
-app.quit()
+        start_row = 0
 
-print("\n✅ Value version saved with only required sheets")
+        # Write prefix rows
+        prefix_df.to_excel(
+            writer,
+            sheet_name=sheet_name,
+            index=False,
+            header=False,
+            startrow=start_row
+        )
+
+        start_row += len(prefix_df)
+
+        # Write header
+        pd.DataFrame([header]).to_excel(
+            writer,
+            sheet_name=sheet_name,
+            index=False,
+            header=False,
+            startrow=start_row
+        )
+
+        start_row += 1
+
+        # Write appended data
+        combined_data_df.to_excel(
+            writer,
+            sheet_name=sheet_name,
+            index=False,
+            header=False,
+            startrow=start_row
+        )
+
+print("✅ Combined file created successfully")
