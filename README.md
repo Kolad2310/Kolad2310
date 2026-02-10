@@ -6,8 +6,7 @@ from pywintypes import com_error
 SOURCE_FOLDER = r"C:\input_excels"
 TARGET_FOLDER = r"C:\value_excels"
 
-# 👇 Only these sheets will be processed
-L = ["Sheet1", "Summary", "F1 Landing Page DB"]  # <-- edit this
+L = ["Sheet1", "Summary", "F1 Landing Page DB"]  # sheets to process
 
 os.makedirs(TARGET_FOLDER, exist_ok=True)
 
@@ -16,6 +15,11 @@ app.display_alerts = False
 app.screen_updating = False
 
 for file in os.listdir(SOURCE_FOLDER):
+
+    # 🚫 skip Excel temp / lock files
+    if file.startswith("~$"):
+        continue
+
     if not file.lower().endswith((".xlsx", ".xlsm", ".xls")):
         continue
 
@@ -24,13 +28,12 @@ for file in os.listdir(SOURCE_FOLDER):
 
     for sheet in wb.sheets:
         if sheet.name not in L:
-            continue  # ⛔ skip all other sheets
+            continue
 
         try:
-            # PURE lift-and-shift (Excel-native)
             sheet.api.Cells.Copy()
-            sheet.api.Cells.PasteSpecial(Paste=-4122)  # xlPasteFormats
-            sheet.api.Cells.PasteSpecial(Paste=-4163)  # xlPasteValues
+            sheet.api.Cells.PasteSpecial(Paste=-4122)  # formats
+            sheet.api.Cells.PasteSpecial(Paste=-4163)  # values
 
         except com_error as e:
             print(
@@ -46,4 +49,4 @@ for file in os.listdir(SOURCE_FOLDER):
 
 app.quit()
 
-print("\n✅ Lift-and-shift completed (only sheets in list L)")
+print("\n✅ Done — temp files skipped, lift-and-shift clean")
