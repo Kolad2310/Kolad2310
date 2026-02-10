@@ -20,13 +20,21 @@ for file in os.listdir(SOURCE_FOLDER):
 
         for sheet in wb.sheets:
             used = sheet.used_range
-            if used is not None:
-                # ✅ Values only, formats untouched
-                used.options(formulas=False).value = used.value
+            if used is None:
+                continue
+
+            # Copy the range
+            used.copy()
+
+            # 1️⃣ Paste formats
+            used.paste(paste="formats")
+
+            # 2️⃣ Paste values
+            used.value = used.value
 
         wb.save(tgt_path)
         wb.close()
 
 app.quit()
 
-print("✅ Value versions saved with formatting preserved")
+print("✅ Value versions created with formatting preserved")
