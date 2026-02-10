@@ -1,61 +1,30 @@
 ```
-import xlwings as xw
 import os
-import time
+import win32com.client as win32
 
-# =========================
-# CONFIGURATION
-# =========================
-template_path = r"C:\input\template.xlsx"
-output_folder = r"C:\output"
+SOURCE_FOLDER = r"C:\input_excels"
+TARGET_FOLDER = r"C:\value_excels"
 
-sheet_name = "F1 Landing Page DB"
-target_cell = "A1"   # cell to replace with list item
+os.makedirs(TARGET_FOLDER, exist_ok=True)
 
-entity_list = [
-    "India",
-    "UK",
-    "USA",
-    "Germany"
-]
+excel = win32.Dispatch("Excel.Application")
+excel.Visible = False
+excel.DisplayAlerts = False
 
-# Ensure output folder exists
-os.makedirs(output_folder, exist_ok=True)
+for file in os.listdir(SOURCE_FOLDER):
+    if file.lower().endswith((".xlsx", ".xlsm", ".xls")):
+        src_path = os.path.join(SOURCE_FOLDER, file)
+        tgt_path = os.path.join(TARGET_FOLDER, file)
 
-# =========================
-# PROCESS
-# =========================
-app = xw.App(visible=False)
-app.display_alerts = False
-app.screen_updating = False
+        wb = excel.Workbooks.Open(src_path)
 
-try:
-    for entity in entity_list:
-        print(f"Processing: {entity}")
+        for sheet in wb.Worksheets:
+            used_range = sheet.UsedRange
+            used_range.Value = used_range.Value  # 🔥 formula → value
 
-        wb = app.books.open(template_path)
+        wb.SaveAs(tgt_path)
+        wb.Close(False)
 
-        sht = wb.sheets[sheet_name]
+excel.Quit()
 
-        # Replace value with list item
-        sht.range(target_cell).value = entity
-
-        # Refresh all connections / queries
-        wb.api.RefreshAll()
-
-        # Give Excel time to complete refresh
-        time.sleep(5)
-
-        # Save new file
-        output_file = os.path.join(
-            output_folder,
-            f"F1_Landing_{entity}.xlsx"
-        )
-
-        wb.save(output_file)
-        wb.close()
-
-        print(f"Saved: {output_file}")
-
-finally:
-    app.quit()
+print("✅ All files saved as value versions successfully")
