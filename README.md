@@ -6,7 +6,8 @@ from pywintypes import com_error
 SOURCE_FOLDER = r"C:\input_excels"
 TARGET_FOLDER = r"C:\value_excels"
 
-L = ["Sheet1", "Summary", "F1 Landing Page DB"]  # sheets to process
+# 👇 Only these sheets will remain in output
+L = ["Sheet1", "Summary", "F1 Landing Page DB"]
 
 os.makedirs(TARGET_FOLDER, exist_ok=True)
 
@@ -16,7 +17,7 @@ app.screen_updating = False
 
 for file in os.listdir(SOURCE_FOLDER):
 
-    # 🚫 skip Excel temp / lock files
+    # 🚫 Skip Excel temp files
     if file.startswith("~$"):
         continue
 
@@ -26,14 +27,15 @@ for file in os.listdir(SOURCE_FOLDER):
     print(f"\nProcessing file: {file}")
     wb = app.books.open(os.path.join(SOURCE_FOLDER, file))
 
+    # --- 1️⃣ Lift-and-shift ONLY for sheets in L ---
     for sheet in wb.sheets:
         if sheet.name not in L:
             continue
 
         try:
             sheet.api.Cells.Copy()
-            sheet.api.Cells.PasteSpecial(Paste=-4122)  # formats
-            sheet.api.Cells.PasteSpecial(Paste=-4163)  # values
+            sheet.api.Cells.PasteSpecial(Paste=-4122)  # xlPasteFormats
+            sheet.api.Cells.PasteSpecial(Paste=-4163)  # xlPasteValues
 
         except com_error as e:
             print(
@@ -44,9 +46,22 @@ for file in os.listdir(SOURCE_FOLDER):
                 f"   Error : {e}"
             )
 
+    # --- 2️⃣ Delete all other sheets ---
+    for sheet in wb.sheets:
+        if sheet.name not in L:
+            try:
+                sheet.delete()
+            except com_error as e:
+                print(
+                    f"❌ FAILED TO DELETE SHEET\n"
+                    f"   File  : {file}\n"
+                    f"   Sheet : {sheet.name}\n"
+                    f"   Error : {e}"
+                )
+
     wb.save(os.path.join(TARGET_FOLDER, file))
     wb.close()
 
 app.quit()
 
-print("\n✅ Done — temp files skipped, lift-and-shift clean")
+print("\n✅ Value version saved with only required sheets")
