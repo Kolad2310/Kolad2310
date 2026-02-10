@@ -21,11 +21,12 @@ for file in os.listdir(SOURCE_FOLDER):
         for sheet in wb.sheets:
             used = sheet.used_range
             if used is not None:
-                used.value = used.value  # 🔥 formulas → values
+                # ✅ Values only, formats untouched
+                used.options(formulas=False).value = used.value
 
         wb.save(tgt_path)
         wb.close()
 
 app.quit()
 
-print("✅ Value versions created successfully")
+print("✅ Value versions saved with formatting preserved")
