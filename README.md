@@ -3,7 +3,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 import pandas as pd
 
-# Variables to be used outside GUI
+# Variables to use outside GUI
 file = None
 separator = None
 output_name = None
@@ -20,7 +20,6 @@ def run_gui():
         if file:
             file_label.config(text=file)
 
-            # Read only header row to get column names
             try:
                 df = pd.read_csv(file, sep=sep_entry.get(), nrows=0)
                 listbox.delete(0, tk.END)
@@ -38,34 +37,45 @@ def run_gui():
         selected_indices = listbox.curselection()
         l = [listbox.get(i) for i in selected_indices]
 
-        root.destroy()  # Close GUI
+        root.destroy()
 
     root = tk.Tk()
-    root.title("CSV Processor")
+    root.title("CSV Duplicate Drop Tool")
 
-    # File Selection
-    tk.Button(root, text="Select CSV File", command=browse_file).pack(pady=5)
-    file_label = tk.Label(root, text="No file selected")
-    file_label.pack()
+    # Row 0 - File selection
+    tk.Button(root, text="Select CSV File", command=browse_file).grid(row=0, column=0, padx=5, pady=5)
+    file_label = tk.Label(root, text="No file selected", anchor="w")
+    file_label.grid(row=0, column=1, columnspan=2, sticky="w")
 
-    # Separator Entry
-    tk.Label(root, text="Separator:").pack()
-    sep_entry = tk.Entry(root)
-    sep_entry.insert(0, ",")  # default separator
-    sep_entry.pack()
+    # Row 1 - Separator
+    tk.Label(root, text="Separator:").grid(row=1, column=0, sticky="e", padx=5)
+    sep_entry = tk.Entry(root, width=10)
+    sep_entry.insert(0, ",")
+    sep_entry.grid(row=1, column=1, sticky="w")
 
-    # Output Name Entry
-    tk.Label(root, text="Output File Name:").pack()
-    output_entry = tk.Entry(root)
-    output_entry.pack()
+    # Row 2 - Output Name
+    tk.Label(root, text="Output File Name:").grid(row=2, column=0, sticky="e", padx=5)
+    output_entry = tk.Entry(root, width=25)
+    output_entry.grid(row=2, column=1, sticky="w")
 
-    # Column Selection (Multi-select)
-    tk.Label(root, text="Select Columns:").pack()
-    listbox = tk.Listbox(root, selectmode=tk.MULTIPLE, width=50, height=10)
-    listbox.pack()
+    # Row 3 - Column Selection Label
+    tk.Label(root, text="Select Columns:").grid(row=3, column=0, sticky="ne", padx=5, pady=5)
 
-    # Submit Button
-    tk.Button(root, text="Submit", command=submit).pack(pady=10)
+    # Multi-select Listbox
+    listbox = tk.Listbox(root, selectmode=tk.MULTIPLE, width=40, height=10)
+    listbox.grid(row=3, column=1, padx=5, pady=5)
+
+    # Description next to listbox
+    desc_label = tk.Label(
+        root,
+        text="Subset to drop duplicate columns",
+        fg="blue",
+        justify="left"
+    )
+    desc_label.grid(row=3, column=2, sticky="nw", padx=5)
+
+    # Submit button
+    tk.Button(root, text="Submit", command=submit).grid(row=4, column=1, pady=10)
 
     root.mainloop()
 
@@ -73,7 +83,7 @@ def run_gui():
 # Run GUI
 run_gui()
 
-# Variables available here
+# Variables available outside
 print("File:", file)
 print("Separator:", separator)
 print("Output Name:", output_name)
