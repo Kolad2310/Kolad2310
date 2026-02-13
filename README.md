@@ -1,87 +1,80 @@
 ```
-import win32com.client as win32
-import os
-import sys
+import tkinter as tk
+from tkinter import filedialog, messagebox
+import pandas as pd
+
+# Variables to be used outside GUI
+file = None
+separator = None
+output_name = None
+l = []
+
+def run_gui():
+    global file, separator, output_name, l
+
+    def browse_file():
+        global file
+        file = filedialog.askopenfilename(
+            filetypes=[("CSV files", "*.csv")]
+        )
+        if file:
+            file_label.config(text=file)
+
+            # Read only header row to get column names
+            try:
+                df = pd.read_csv(file, sep=sep_entry.get(), nrows=0)
+                listbox.delete(0, tk.END)
+                for col in df.columns:
+                    listbox.insert(tk.END, col)
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not read file:\n{e}")
+
+    def submit():
+        global separator, output_name, l
+
+        separator = sep_entry.get()
+        output_name = output_entry.get()
+
+        selected_indices = listbox.curselection()
+        l = [listbox.get(i) for i in selected_indices]
+
+        root.destroy()  # Close GUI
+
+    root = tk.Tk()
+    root.title("CSV Processor")
+
+    # File Selection
+    tk.Button(root, text="Select CSV File", command=browse_file).pack(pady=5)
+    file_label = tk.Label(root, text="No file selected")
+    file_label.pack()
+
+    # Separator Entry
+    tk.Label(root, text="Separator:").pack()
+    sep_entry = tk.Entry(root)
+    sep_entry.insert(0, ",")  # default separator
+    sep_entry.pack()
+
+    # Output Name Entry
+    tk.Label(root, text="Output File Name:").pack()
+    output_entry = tk.Entry(root)
+    output_entry.pack()
+
+    # Column Selection (Multi-select)
+    tk.Label(root, text="Select Columns:").pack()
+    listbox = tk.Listbox(root, selectmode=tk.MULTIPLE, width=50, height=10)
+    listbox.pack()
+
+    # Submit Button
+    tk.Button(root, text="Submit", command=submit).pack(pady=10)
+
+    root.mainloop()
 
 
-def break_excel_links(
-    input_file,
-    output_file=None,
-    visible=False
-):
-    """
-    Breaks all Excel external links in a workbook safely.
+# Run GUI
+run_gui()
 
-    Parameters
-    ----------
-    input_file : str
-        Path to source Excel file
-    output_file : str | None
-        If None → overwrite input file
-        Else → save to this path
-    visible : bool
-        Show Excel UI (debug)
-
-    Returns
-    -------
-    dict with link details
-    """
-
-    excel = win32.Dispatch("Excel.Application")
-    excel.Visible = visible
-    excel.DisplayAlerts = False
-
-    input_file = os.path.abspath(input_file)
-
-    wb = excel.Workbooks.Open(
-        input_file,
-        UpdateLinks=0,   # DO NOT auto-update
-        ReadOnly=False
-    )
-
-    result = {
-        "file": input_file,
-        "links_found": False,
-        "links": []
-    }
-
-    # xlLinkTypeExcelLinks = 1
-    links = wb.LinkSources(Type=1)
-
-    if links:
-        result["links_found"] = True
-        result["links"] = list(links)
-
-        for link in links:
-            wb.BreakLink(Name=link, Type=1)
-
-    # Save logic
-    if output_file:
-        wb.SaveAs(os.path.abspath(output_file))
-    else:
-        wb.Save()
-
-    wb.Close(False)
-    excel.Quit()
-
-    return result
-
-
-# ------------------ RUN DIRECTLY ------------------
-if __name__ == "__main__":
-
-    INPUT_FILE = r"C:\data\input.xlsx"
-    OUTPUT_FILE = r"C:\data\input_no_links.xlsx"  # set None to overwrite
-
-    result = break_excel_links(
-        INPUT_FILE,
-        OUTPUT_FILE,
-        visible=False
-    )
-
-    if result["links_found"]:
-        print("✅ External links were found and broken:")
-        for l in result["links"]:
-            print("   -", l)
-    else:
-        print("✅ No external links found")
+# Variables available here
+print("File:", file)
+print("Separator:", separator)
+print("Output Name:", output_name)
+print("Selected Columns List (l):", l)
