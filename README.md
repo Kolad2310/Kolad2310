@@ -1,90 +1,281 @@
 ```
-import tkinter as tk
-from tkinter import filedialog, messagebox
+✅ Watchdog listener
+✅ Validation
+✅ Ingestion
+✅ Trend analysis (Moving Average + Volatility)
+✅ Anomaly detection (Z-Score)
+✅ SQLite storage
+✅ Logging
+✅ Clear file-style headers (as comments
+
+
+
+
+
+"""
+================================================================================
+FILE: risk_trend_engine.py
+AUTHOR: Your Name
+DESCRIPTION:
+Event-driven Risk Trend Monitoring Engine using Python Watchdog.
+
+This script:
+1. Monitors a folder for new Excel risk files
+2. Validates schema
+3. Computes trend metrics (30-day moving average, volatility)
+4. Performs anomaly detection (Z-score)
+5. Stores results in SQLite database
+6. Logs all activity
+================================================================================
+"""
+
+# ============================== IMPORT SECTION ==============================
+
+import os
+import time
+import logging
+import sqlite3
 import pandas as pd
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
-# Variables to use outside GUI
-file = None
-separator = None
-output_name = None
-l = []
+# ============================== CONFIG SECTION ==============================
 
-def run_gui():
-    global file, separator, output_name, l
+"""
+Central configuration block.
+Modify paths here only.
+"""
 
-    def browse_file():
-        global file
-        file = filedialog.askopenfilename(
-            filetypes=[("CSV files", "*.csv")]
-        )
-        if file:
-            file_label.config(text=file)
+INPUT_FOLDER = r"data/input"
+PROCESSED_FOLDER = r"data/processed"
+DATABASE_NAME = "risk_trend.db"
+LOG_FILE = "risk_engine.log"
 
-            try:
-                df = pd.read_csv(file, sep=sep_entry.get(), nrows=0)
-                listbox.delete(0, tk.END)
-                for col in df.columns:
-                    listbox.insert(tk.END, col)
-            except Exception as e:
-                messagebox.showerror("Error", f"Could not read file:\n{e}")
+# Create folders if not present
+os.makedirs(INPUT_FOLDER, exist_ok=True)
+os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 
-    def submit():
-        global separator, output_name, l
+# ============================== LOGGER SETUP ==============================
 
-        separator = sep_entry.get()
-        output_name = output_entry.get()
+"""
+Production-grade logging.
+All events/errors get logged into a file.
+"""
 
-        selected_indices = listbox.curselection()
-        l = [listbox.get(i) for i in selected_indices]
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
 
-        root.destroy()
+# ============================== VALIDATION MODULE ==============================
 
-    root = tk.Tk()
-    root.title("CSV Duplicate Drop Tool")
+def validate_schema(df):
+    """
+    Ensures required columns exist.
+    Prevents downstream errors due to schema mismatch.
+    """
+    required_cols = ["Date", "Exposure"]
 
-    # Row 0 - File selection
-    tk.Button(root, text="Select CSV File", command=browse_file).grid(row=0, column=0, padx=5, pady=5)
-    file_label = tk.Label(root, text="No file selected", anchor="w")
-    file_label.grid(row=0, column=1, columnspan=2, sticky="w")
+    for col in required_cols:
+        if col not in df.columns:
+            raise ValueError(f"Missing required column: {col}")
 
-    # Row 1 - Separator
-    tk.Label(root, text="Separator:").grid(row=1, column=0, sticky="e", padx=5)
-    sep_entry = tk.Entry(root, width=10)
-    sep_entry.insert(0, ",")
-    sep_entry.grid(row=1, column=1, sticky="w")
+    logging.info("Schema validation successful.")
+    return True
 
-    # Row 2 - Output Name
-    tk.Label(root, text="Output File Name:").grid(row=2, column=0, sticky="e", padx=5)
-    output_entry = tk.Entry(root, width=25)
-    output_entry.grid(row=2, column=1, sticky="w")
+# ============================== TREND ENGINE ==============================
 
-    # Row 3 - Column Selection Label
-    tk.Label(root, text="Select Columns:").grid(row=3, column=0, sticky="ne", padx=5, pady=5)
+def compute_trends(df):
+    """
+    Computes rolling financial metrics:
+    - 30-day Moving Average
+    - Rolling Volatility (Std Dev)
+    """
 
-    # Multi-select Listbox
-    listbox = tk.Listbox(root, selectmode=tk.MULTIPLE, width=40, height=10)
-    listbox.grid(row=3, column=1, padx=5, pady=5)
+    df = df.sort_values("Date")
 
-    # Description next to listbox
-    desc_label = tk.Label(
-        root,
-        text="Subset to drop duplicate columns",
-        fg="blue",
-        justify="left"
+    # Rolling 30-day average exposure
+    df["30D_MA"] = df["Exposure"].rolling(30).mean()
+
+    # Rolling volatility (risk measure)
+    df["Volatility"] = df["Exposure"].rolling(30).std()
+
+    logging.info("Trend metrics computed.")
+    return df
+
+# ============================== ANOMALY DETECTION ==============================
+
+def detect_anomaly(df):
+    """
+    Z-Score anomaly detection:
+    Z = (Current Exposure - Moving Average) / Volatility
+
+    If |Z| > 2 → Flag as anomaly.
+    """
+
+    df["Z_score"] = (
+        (df["Exposure"] - df["30D_MA"]) / df["Volatility"]
     )
-    desc_label.grid(row=3, column=2, sticky="nw", padx=5)
 
-    # Submit button
-    tk.Button(root, text="Submit", command=submit).grid(row=4, column=1, pady=10)
+    df["Alert"] = df["Z_score"].apply(
+        lambda x: "YES" if abs(x) > 2 else "NO"
+    )
 
-    root.mainloop()
+    logging.info("Anomaly detection completed.")
+    return df
+
+# ============================== DATABASE MODULE ==============================
+
+def save_to_database(df):
+    """
+    Saves processed data into SQLite database.
+    Acts as lightweight data warehouse.
+    """
+
+    conn = sqlite3.connect(DATABASE_NAME)
+
+    df.to_sql(
+        "risk_data",
+        conn,
+        if_exists="append",
+        index=False
+    )
+
+    conn.close()
+
+    logging.info("Data saved to SQLite database.")
+
+# ============================== ALERT SYSTEM ==============================
+
+def check_and_alert(df):
+    """
+    Simple alert mechanism.
+    In production, this could send:
+    - Email
+    - Teams notification
+    - Slack message
+    """
+
+    alerts = df[df["Alert"] == "YES"]
+
+    if not alerts.empty:
+        logging.warning("Anomaly detected in exposure!")
+        print("⚠️ Anomaly detected! Check log file.")
+    else:
+        logging.info("No anomalies detected.")
+
+# ============================== INGESTION PIPELINE ==============================
+
+def process_risk_file(file_path):
+    """
+    Full processing pipeline triggered by Watchdog event.
+    """
+
+    try:
+        logging.info(f"Processing file: {file_path}")
+
+        # Step 1: Load Excel file
+        df = pd.read_excel(file_path)
+
+        # Step 2: Validate structure
+        validate_schema(df)
+
+        # Step 3: Convert Date column properly
+        df["Date"] = pd.to_datetime(df["Date"])
+
+        # Step 4: Compute trends
+        df = compute_trends(df)
+
+        # Step 5: Detect anomalies
+        df = detect_anomaly(df)
+
+        # Step 6: Save processed output
+        output_path = os.path.join(
+            PROCESSED_FOLDER,
+            "processed_" + os.path.basename(file_path)
+        )
+
+        df.to_excel(output_path, index=False)
+
+        # Step 7: Store in database
+        save_to_database(df)
+
+        # Step 8: Check for alerts
+        check_and_alert(df)
+
+        logging.info("File processed successfully.\n")
+
+    except Exception as e:
+        logging.error(f"Error processing file: {str(e)}")
+        print("❌ Error occurred. Check logs.")
+
+# ============================== WATCHDOG LISTENER ==============================
+
+class RiskFileHandler(FileSystemEventHandler):
+    """
+    Event handler class.
+    Triggers when new file is created in monitored folder.
+    """
+
+    def on_created(self, event):
+        if not event.is_directory:
+            if event.src_path.endswith(".xlsx"):
+                print(f"📂 New file detected: {event.src_path}")
+                process_risk_file(event.src_path)
+
+# ============================== MAIN EXECUTION ==============================
+
+def start_watching():
+    """
+    Starts Watchdog observer.
+    Runs continuously until manually stopped.
+    """
+
+    observer = Observer()
+    observer.schedule(
+        RiskFileHandler(),
+        INPUT_FOLDER,
+        recursive=False
+    )
+
+    observer.start()
+
+    print("🚀 Risk Trend Engine is running...")
+    logging.info("Risk Trend Engine started.")
+
+    try:
+        while True:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        observer.stop()
+        logging.info("Engine stopped manually.")
+
+    observer.join()
 
 
-# Run GUI
-run_gui()
+# Entry point
+if __name__ == "__main__":
+    start_watching()
 
-# Variables available outside
-print("File:", file)
-print("Separator:", separator)
-print("Output Name:", output_name)
-print("Selected Columns List (l):", l)
+
+
+New Excel File Dropped
+        ↓
+Watchdog Detects Event
+        ↓
+Schema Validation
+        ↓
+Trend Computation (30D MA + Volatility)
+        ↓
+Z-score Anomaly Detection
+        ↓
+Save Processed File
+        ↓
+Store in SQLite
+        ↓
+Alert if Needed
+        ↓
+Log Everything
+
+
