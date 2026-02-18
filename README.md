@@ -1,143 +1,111 @@
 ```
+# ============================= ingestion.py =============================
 
-# ============================= trend_engine.py =============================
+"""
+Central Processing Pipeline
 
-from logger import logger
-
-def compute_trends(df):
-    """
-    Compute rolling metrics with higher sensitivity
-    suitable for trending financial data (millions).
-    """
-
-    df = df.sort_values("Date")
-
-    # Use 15-day rolling window for better sensitivity
-    df["MA"] = df["Exposure"].rolling(15, min_periods=1).mean()
-
-    df["Volatility"] = df["Exposure"].rolling(15, min_periods=1).std()
-
-    logger.info("Trend metrics computed (15-day window).")
-
-    return df
-
-# ============================= anomaly.py =============================
-
-from logger import logger
-
-def detect_anomaly(df):
-    """
-    Hybrid anomaly detection:
-    1. Z-score threshold (statistical)
-    2. Percentage drop threshold (business shock)
-    3. Absolute drop threshold (large value drop)
-    """
-
-    # Safe Z-score calculation
-    df["Z_score"] = (
-        (df["Exposure"] - df["MA"]) /
-        df["Volatility"].replace(0, 1)
-    )
-
-    # Percentage change
-    df["Pct_Change"] = df["Exposure"].pct_change()
-
-    # Absolute drop from moving average
-    df["Abs_Drop"] = df["MA"] - df["Exposure"]
-
-    df["Alert"] = df.apply(
-        lambda row: "YES" if (
-            abs(row["Z_score"]) > 1.5          # statistical
-            or row["Pct_Change"] < -0.10       # >10% drop
-            or row["Abs_Drop"] > 400000        # >4 lakh drop
-        ) else "NO",
-        axis=1
-    )
-
-    logger.info("Hybrid anomaly detection completed.")
-
-    return df
-
-df = pd.read_excel(file_path)
-
-validate_schema(df)
-
-# Clean date
-df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-df = df.dropna(subset=["Date"])
-
-# Clean exposure
-df["Exposure"] = pd.to_numeric(df["Exposure"], errors="coerce")
-df = df.dropna(subset=["Exposure"])
-
-
-
-# ============================= chart_generator.py =============================
+This file:
+1. Reads Excel input file
+2. Validates schema
+3. Cleans Date and Exposure columns
+4. Computes trend metrics
+5. Detects anomalies (hybrid logic)
+6. Saves processed Excel file
+7. Saves data to SQLite DB
+8. Generates latest trend chart PNG
+"""
 
 import os
-import matplotlib.pyplot as plt
+import pandas as pd
+
+from validator import validate_schema
+from trend_engine import compute_trends
+from anomaly import detect_anomaly
+from database import save_to_database
+from chart_generator import generate_trend_chart
 from config import PROCESSED_FOLDER
 from logger import logger
 
 
-def generate_trend_chart(df):
+def process_risk_file(file_path):
     """
-    Generates trend chart for latest processed data.
-    Keeps only one latest PNG file.
+    Main ingestion pipeline triggered by Watchdog
     """
 
     try:
-        # Ensure output folder exists
+        logger.info(f"Processing file started: {file_path}")
+
+        # --------------------------------------------------
+        # 1️⃣ Read Excel file
+        # --------------------------------------------------
+        df = pd.read_excel(file_path)
+
+        # --------------------------------------------------
+        # 2️⃣ Validate schema (must contain Date & Exposure)
+        # --------------------------------------------------
+        validate_schema(df)
+
+        # --------------------------------------------------
+        # 3️⃣ Clean & Standardize Data
+        # --------------------------------------------------
+
+        # Convert Date column safely
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+        # Convert Exposure to numeric
+        df["Exposure"] = pd.to_numeric(df["Exposure"], errors="coerce")
+
+        # Remove invalid rows
+        df = df.dropna(subset=["Date", "Exposure"])
+
+        # Sort properly
+        df = df.sort_values("Date")
+
+        logger.info("Data cleaning completed.")
+
+        # --------------------------------------------------
+        # 4️⃣ Compute Trend Metrics
+        # --------------------------------------------------
+        df = compute_trends(df)
+
+        # --------------------------------------------------
+        # 5️⃣ Detect Anomalies (Hybrid Logic)
+        # --------------------------------------------------
+        df = detect_anomaly(df)
+
+        # --------------------------------------------------
+        # 6️⃣ Save Processed Excel File
+        # --------------------------------------------------
         os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 
-        chart_path = os.path.join(PROCESSED_FOLDER, "trend_latest.png")
+        output_path = os.path.join(
+            PROCESSED_FOLDER,
+            "processed_" + os.path.basename(file_path)
+        )
 
-        # Clear old chart if exists
-        if os.path.exists(chart_path):
-            os.remove(chart_path)
+        df.to_excel(output_path, index=False)
 
-        plt.figure(figsize=(12, 6))
+        logger.info(f"Processed file saved at: {output_path}")
 
-        # Plot Exposure
-        plt.plot(df["Date"], df["Exposure"], label="Exposure")
+        # --------------------------------------------------
+        # 7️⃣ Save to SQLite Database
+        # (Auto-creates DB if not present)
+        # --------------------------------------------------
+        try:
+            save_to_database(df)
+        except Exception as db_error:
+            logger.warning(f"Database save skipped: {str(db_error)}")
 
-        # Plot Moving Average
-        plt.plot(df["Date"], df["MA"], label="Moving Average (15D)")
+        # --------------------------------------------------
+        # 8️⃣ Generate Trend Chart (Keeps only latest PNG)
+        # --------------------------------------------------
+        try:
+            generate_trend_chart(df)
+        except Exception as chart_error:
+            logger.warning(f"Chart generation skipped: {str(chart_error)}")
 
-        # Highlight Alert Points
-        alerts = df[df["Alert"] == "YES"]
-        if not alerts.empty:
-            plt.scatter(
-                alerts["Date"],
-                alerts["Exposure"],
-                marker="o",
-                s=100,
-                label="Alert"
-            )
-
-        plt.title("Risk Exposure Trend")
-        plt.xlabel("Date")
-        plt.ylabel("Exposure")
-        plt.legend()
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-
-        plt.savefig(chart_path)
-        plt.close()
-
-        logger.info("Trend chart generated successfully.")
+        logger.info("Processing completed successfully.\n")
 
     except Exception as e:
-        logger.error(f"Chart generation failed: {str(e)}")
-
-
-
-
-from chart_generator import generate_trend_chart
-
-
-df = detect_anomaly(df)
-
-# Generate chart
-generate_trend_chart(df)
-
+        logger.error(f"Error processing file: {str(e)}")
+        print("❌ Error occurred. Check logs.")
