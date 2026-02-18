@@ -1,111 +1,68 @@
 ```
-# ============================= ingestion.py =============================
+# ============================= logger.py =============================
 
 """
-Central Processing Pipeline
+Central Logging Configuration
 
-This file:
-1. Reads Excel input file
-2. Validates schema
-3. Cleans Date and Exposure columns
-4. Computes trend metrics
-5. Detects anomalies (hybrid logic)
-6. Saves processed Excel file
-7. Saves data to SQLite DB
-8. Generates latest trend chart PNG
+Features:
+- Auto-creates logs directory
+- Writes logs to file
+- Prints logs to console
+- Prevents duplicate handlers
+- Production-ready format
 """
 
 import os
-import pandas as pd
-
-from validator import validate_schema
-from trend_engine import compute_trends
-from anomaly import detect_anomaly
-from database import save_to_database
-from chart_generator import generate_trend_chart
-from config import PROCESSED_FOLDER
-from logger import logger
+import logging
+from config import LOG_FILE
 
 
-def process_risk_file(file_path):
-    """
-    Main ingestion pipeline triggered by Watchdog
-    """
+# --------------------------------------------------
+# Ensure logs directory exists
+# --------------------------------------------------
+log_directory = os.path.dirname(LOG_FILE)
+os.makedirs(log_directory, exist_ok=True)
 
-    try:
-        logger.info(f"Processing file started: {file_path}")
 
-        # --------------------------------------------------
-        # 1️⃣ Read Excel file
-        # --------------------------------------------------
-        df = pd.read_excel(file_path)
+# --------------------------------------------------
+# Create Logger
+# --------------------------------------------------
+logger = logging.getLogger("RiskTrendEngine")
+logger.setLevel(logging.INFO)
 
-        # --------------------------------------------------
-        # 2️⃣ Validate schema (must contain Date & Exposure)
-        # --------------------------------------------------
-        validate_schema(df)
 
-        # --------------------------------------------------
-        # 3️⃣ Clean & Standardize Data
-        # --------------------------------------------------
+# Prevent duplicate handlers if re-imported
+if not logger.handlers:
 
-        # Convert Date column safely
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    # ---------------- File Handler ----------------
+    file_handler = logging.FileHandler(LOG_FILE)
+    file_handler.setLevel(logging.INFO)
 
-        # Convert Exposure to numeric
-        df["Exposure"] = pd.to_numeric(df["Exposure"], errors="coerce")
+    # ---------------- Console Handler ----------------
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
 
-        # Remove invalid rows
-        df = df.dropna(subset=["Date", "Exposure"])
+    # ---------------- Log Format ----------------
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+    )
 
-        # Sort properly
-        df = df.sort_values("Date")
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
 
-        logger.info("Data cleaning completed.")
+    # ---------------- Add Handlers ----------------
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
 
-        # --------------------------------------------------
-        # 4️⃣ Compute Trend Metrics
-        # --------------------------------------------------
-        df = compute_trends(df)
 
-        # --------------------------------------------------
-        # 5️⃣ Detect Anomalies (Hybrid Logic)
-        # --------------------------------------------------
-        df = detect_anomaly(df)
+# Optional: Reduce noise from matplotlib
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
 
-        # --------------------------------------------------
-        # 6️⃣ Save Processed Excel File
-        # --------------------------------------------------
-        os.makedirs(PROCESSED_FOLDER, exist_ok=True)
 
-        output_path = os.path.join(
-            PROCESSED_FOLDER,
-            "processed_" + os.path.basename(file_path)
-        )
-
-        df.to_excel(output_path, index=False)
-
-        logger.info(f"Processed file saved at: {output_path}")
-
-        # --------------------------------------------------
-        # 7️⃣ Save to SQLite Database
-        # (Auto-creates DB if not present)
-        # --------------------------------------------------
-        try:
-            save_to_database(df)
-        except Exception as db_error:
-            logger.warning(f"Database save skipped: {str(db_error)}")
-
-        # --------------------------------------------------
-        # 8️⃣ Generate Trend Chart (Keeps only latest PNG)
-        # --------------------------------------------------
-        try:
-            generate_trend_chart(df)
-        except Exception as chart_error:
-            logger.warning(f"Chart generation skipped: {str(chart_error)}")
-
-        logger.info("Processing completed successfully.\n")
-
-    except Exception as e:
-        logger.error(f"Error processing file: {str(e)}")
-        print("❌ Error occurred. Check logs.")
+# --------------------------------------------------
+# Example Usage (for testing)
+# --------------------------------------------------
+if __name__ == "__main__":
+    logger.info("Logger initialized successfully.")
+    logger.warning("This is a warning example.")
+    logger.error("This is an error example.")
