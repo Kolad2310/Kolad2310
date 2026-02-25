@@ -1,5 +1,4 @@
 ```
-
 import os
 import sys
 import pandas as pd
@@ -53,6 +52,9 @@ def read_cell(file, sheet, row, col):
     except:
         return None
 
+# ----------------------------
+# POPUPS
+# ----------------------------
 
 def ask_product_code(file, sheet):
     popup = tk.Toplevel(root)
@@ -61,8 +63,7 @@ def ask_product_code(file, sheet):
 
     tk.Label(
         popup,
-        text=f"Product required\n\nFile: {os.path.basename(file)}\nSheet: {sheet}",
-        justify="left"
+        text=f"Product required\n\nFile: {os.path.basename(file)}\nSheet: {sheet}"
     ).pack(padx=20, pady=10)
 
     selected = tk.StringVar()
@@ -71,21 +72,49 @@ def ask_product_code(file, sheet):
         popup,
         textvariable=selected,
         values=list_prodcode,
-        state="readonly",
-        width=30
+        state="readonly"
     )
     dropdown.pack(pady=5)
 
     def submit():
         if not selected.get():
-            messagebox.showerror("Error", "Please select a product code.")
+            messagebox.showerror("Error", "Select a product code.")
         else:
             popup.destroy()
 
     tk.Button(popup, text="Submit", command=submit).pack(pady=10)
-
     popup.wait_window()
+
     return selected.get()
+
+
+def ask_usd_rate():
+    popup = tk.Toplevel(root)
+    popup.title("USD Conversion Required")
+    popup.grab_set()
+
+    tk.Label(
+        popup,
+        text="USD detected in one or more sheets.\n\nEnter rate:\n1 GBP = ___ USD"
+    ).pack(padx=20, pady=10)
+
+    rate_var = tk.StringVar()
+    entry = tk.Entry(popup, textvariable=rate_var)
+    entry.pack(pady=5)
+
+    def submit():
+        try:
+            rate = float(rate_var.get())
+            if rate <= 0:
+                raise ValueError
+            popup.destroy()
+        except:
+            messagebox.showerror("Error", "Enter valid numeric rate.")
+
+    tk.Button(popup, text="Submit", command=submit).pack(pady=10)
+    popup.wait_window()
+
+    return float(rate_var.get())
 
 # ----------------------------
 # PROCESSING
@@ -96,6 +125,7 @@ def process_files(folder, selection_dict):
     try:
         all_data = []
         header_reference = None
+        usd_rate = None  # <-- Store rate once
 
         for file, sheets in selection_dict.items():
 
@@ -116,7 +146,24 @@ def process_files(folder, selection_dict):
                         return
 
                 # ----------------------------
-                # PRODUCT LOGIC (FINAL CORRECT)
+                # USD CHECK
+                # ----------------------------
+                try:
+                    currency = df.iloc[3, 4]
+                except:
+                    currency = None
+
+                if str(currency).strip().upper() == "USD":
+
+                    if usd_rate is None:
+                        usd_rate = ask_usd_rate()
+
+                    if "Amount" in df.columns:
+                        df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
+                        df["Amount"] = df["Amount"] / usd_rate
+
+                # ----------------------------
+                # PRODUCT LOGIC
                 # ----------------------------
                 if "Product" in df.columns:
 
@@ -127,7 +174,6 @@ def process_files(folder, selection_dict):
 
                     if mask.any():
 
-                        # Read C4 (row index 3, col index 2)
                         c4 = read_cell(file, sheet, 3, 2)
 
                         if pd.isna(c4) or str(c4).strip() == "":
@@ -195,10 +241,7 @@ def browse_folder():
     scrollbar = tk.Scrollbar(sheet_window, orient="vertical", command=canvas.yview)
     frame = tk.Frame(canvas)
 
-    frame.bind(
-        "<Configure>",
-        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-    )
+    frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
 
     canvas.create_window((0, 0), window=frame, anchor="nw")
     canvas.configure(yscrollcommand=scrollbar.set)
@@ -232,20 +275,19 @@ def browse_folder():
         selection_dict = {}
 
         for file, sheets in selection_vars.items():
-            selected = [
-                sheet for sheet, var in sheets.items() if var.get()
-            ]
+            selected = [s for s, v in sheets.items() if v.get()]
             if selected:
                 selection_dict[file] = selected
 
         if not selection_dict:
-            messagebox.showerror("Error", "Please select at least one sheet.")
+            messagebox.showerror("Error", "Select at least one sheet.")
             return
 
         sheet_window.destroy()
         process_files(folder, selection_dict)
 
     tk.Button(sheet_window, text="Submit", command=submit).pack(pady=10)
+
 
 # ----------------------------
 # RUN
