@@ -1,155 +1,200 @@
 ```
-# ============================= ingestion.py =============================
-
 import os
 import pandas as pd
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from pyxlsb import open_workbook
 
-from trend_engine import compute_trends
-from anomaly import detect_anomaly
-from chart_generator import generate_trend_chart
-from config import INPUT_FOLDER, PROCESSED_FOLDER
-from logger import logger
+# ----------------------------
+# CONFIG
+# ----------------------------
 
+list_type = ["", "NA", "N/A", None]
+list_prodcode = ["P100", "P200", "P300", "P400"]
 
-def process_risk_file(file_path):
-    """
-    Consolidates ALL Excel files inside input folder
-    and generates single consolidated output + multi-line chart.
-    """
+# ----------------------------
+# HELPERS
+# ----------------------------
 
+def get_excel_files(folder):
+    return [
+        os.path.join(folder, f)
+        for f in os.listdir(folder)
+        if f.endswith((".xls", ".xlsx", ".xlsb"))
+    ]
+
+def get_sheets(file):
     try:
-        logger.info("Starting consolidated processing...")
+        if file.endswith(".xlsb"):
+            with open_workbook(file) as wb:
+                return wb.sheets
+        else:
+            return pd.ExcelFile(file).sheet_names
+    except:
+        return []
 
-        # --------------------------------------------------
-        # 1️⃣ Delete old processed files
-        # --------------------------------------------------
-        if os.path.exists(PROCESSED_FOLDER):
-            for file in os.listdir(PROCESSED_FOLDER):
-                os.remove(os.path.join(PROCESSED_FOLDER, file))
+def read_sheet(file, sheet):
+    if file.endswith(".xlsb"):
+        return pd.read_excel(file, sheet_name=sheet, header=6, engine="pyxlsb")
+    elif file.endswith(".xls"):
+        return pd.read_excel(file, sheet_name=sheet, header=6, engine="xlrd")
+    else:
+        return pd.read_excel(file, sheet_name=sheet, header=6, engine="openpyxl")
 
-        os.makedirs(PROCESSED_FOLDER, exist_ok=True)
+def read_c3(file, sheet):
+    try:
+        df = pd.read_excel(file, sheet_name=sheet, header=None)
+        return df.iloc[2, 2]
+    except:
+        return None
 
-        # --------------------------------------------------
-        # 2️⃣ Read all Excel files from input folder
-        # --------------------------------------------------
-        all_data = []
+def ask_product_code(file, sheet):
+    popup = tk.Toplevel()
+    popup.title("Select Product Code")
 
-        for file in os.listdir(INPUT_FOLDER):
-            if file.endswith(".xlsx"):
-                full_path = os.path.join(INPUT_FOLDER, file)
+    tk.Label(
+        popup,
+        text=f"C3 is empty in:\nFile: {os.path.basename(file)}\nSheet: {sheet}"
+    ).pack(pady=10)
 
-                df = pd.read_excel(full_path)
+    selected = tk.StringVar()
+    dropdown = ttk.Combobox(popup, textvariable=selected, values=list_prodcode)
+    dropdown.pack(pady=5)
 
-                # Clean
-                df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-                df["Exposure"] = pd.to_numeric(df["Exposure"], errors="coerce")
-                df = df.dropna(subset=["Date", "Exposure"])
+    def submit():
+        if not selected.get():
+            messagebox.showerror("Error", "Please select a product code.")
+        else:
+            popup.destroy()
 
-                df = df.sort_values("Date")
+    tk.Button(popup, text="Submit", command=submit).pack(pady=10)
+    popup.grab_set()
+    popup.wait_window()
 
-                # Add source column
-                df["Source_File"] = file
+    return selected.get()
 
-                all_data.append(df)
+# ----------------------------
+# MAIN PROCESSING
+# ----------------------------
 
-        if not all_data:
-            logger.warning("No Excel files found in input folder.")
+def process_files(folder, selected_sheets):
+    files = get_excel_files(folder)
+
+    all_data = []
+    header_reference = None
+
+    for file in files:
+        sheets = get_sheets(file)
+
+        for sheet in selected_sheets:
+            if sheet not in sheets:
+                continue
+
+            df = read_sheet(file, sheet)
+
+            # Drop fully empty rows
+            df = df.dropna(how="all")
+
+            # Validate header
+            if header_reference is None:
+                header_reference = list(df.columns)
+            else:
+                if list(df.columns) != header_reference:
+                    messagebox.showerror(
+                        "Header Error",
+                        f"Header mismatch in {os.path.basename(file)} - {sheet}"
+                    )
+                    return
+
+            # Read C3
+            c3 = read_c3(file, sheet)
+
+            if pd.isna(c3) or c3 == "":
+                c3 = ask_product_code(file, sheet)
+
+            # Replace Product column
+            if "Product" in df.columns:
+                df["Product"] = df["Product"].replace(list_type, pd.NA)
+                df["Product"] = df["Product"].fillna(c3)
+
+            # Remove Amount = 0
+            if "Amount" in df.columns:
+                df = df[df["Amount"] != 0]
+
+            # Remove alphanumeric Customer Number
+            if "Customer Number" in df.columns:
+                df = df[df["Customer Number"].astype(str).str.isnumeric()]
+
+            df["Source File"] = os.path.basename(file)
+            df["Source Sheet"] = sheet
+
+            all_data.append(df)
+
+    if not all_data:
+        messagebox.showwarning("No Data", "No data found to process.")
+        return
+
+    final_df = pd.concat(all_data, ignore_index=True)
+
+    output_path = os.path.join(folder, "cleaned_output.csv")
+    final_df.to_csv(output_path, index=False)
+
+    messagebox.showinfo("Success", f"File saved at:\n{output_path}")
+
+# ----------------------------
+# GUI
+# ----------------------------
+
+def browse_folder():
+    folder = filedialog.askdirectory()
+    if not folder:
+        return
+
+    files = get_excel_files(folder)
+
+    if not files:
+        messagebox.showerror("Error", "No Excel files found.")
+        return
+
+    sheet_set = set()
+    for file in files:
+        sheet_set.update(get_sheets(file))
+
+    sheet_list = list(sheet_set)
+
+    sheet_window = tk.Toplevel(root)
+    sheet_window.title("Select Sheets")
+
+    tk.Label(sheet_window, text="Select Sheets to Process").pack(pady=10)
+
+    listbox = tk.Listbox(sheet_window, selectmode=tk.MULTIPLE, width=50)
+    listbox.pack(padx=20, pady=10)
+
+    for idx, sheet in enumerate(sheet_list):
+        listbox.insert(tk.END, sheet)
+        if sheet == "IncomeSubtype":
+            listbox.selection_set(idx)
+
+    def submit():
+        selected_indices = listbox.curselection()
+        if not selected_indices:
+            messagebox.showerror("Error", "Please select at least one sheet.")
             return
 
-        # --------------------------------------------------
-        # 3️⃣ Consolidate
-        # --------------------------------------------------
-        consolidated_df = pd.concat(all_data, ignore_index=True)
+        selected_sheets = [sheet_list[i] for i in selected_indices]
+        sheet_window.destroy()
+        process_files(folder, selected_sheets)
 
-        # --------------------------------------------------
-        # 4️⃣ Compute trends per file separately
-        # --------------------------------------------------
-        final_df_list = []
+    tk.Button(sheet_window, text="Submit", command=submit).pack(pady=10)
 
-        for file_name, group in consolidated_df.groupby("Source_File"):
-            group = compute_trends(group)
-            group = detect_anomaly(group)
-            final_df_list.append(group)
+# ----------------------------
+# RUN APP
+# ----------------------------
 
-        final_df = pd.concat(final_df_list)
+root = tk.Tk()
+root.title("Excel Product Cleaner")
 
-        # --------------------------------------------------
-        # 5️⃣ Save consolidated Excel
-        # --------------------------------------------------
-        output_path = os.path.join(
-            PROCESSED_FOLDER,
-            "consolidated_output.xlsx"
-        )
+tk.Label(root, text="Select Folder Containing Excel Files").pack(pady=20)
+tk.Button(root, text="Browse Folder", command=browse_folder).pack(pady=10)
 
-        final_df.to_excel(output_path, index=False)
-
-        logger.info("Consolidated Excel saved.")
-
-        # --------------------------------------------------
-        # 6️⃣ Generate Multi-Line Chart
-        # --------------------------------------------------
-        generate_trend_chart(final_df)
-
-        logger.info("Processing completed successfully.\n")
-
-    except Exception as e:
-        logger.error(f"Error during consolidated processing: {str(e)}")
-        print("❌ Error occurred. Check logs.")
-
-
-
-
-
-
-
-
-
-
-# ============================= chart_generator.py =============================
-
-import os
-import matplotlib.pyplot as plt
-from config import PROCESSED_FOLDER
-from logger import logger
-
-
-def generate_trend_chart(df):
-    """
-    Generates consolidated multi-line trend chart.
-    One line per source file.
-    Keeps only latest PNG.
-    """
-
-    try:
-        os.makedirs(PROCESSED_FOLDER, exist_ok=True)
-
-        chart_path = os.path.join(PROCESSED_FOLDER, "trend_latest.png")
-
-        # Delete old PNG if exists
-        if os.path.exists(chart_path):
-            os.remove(chart_path)
-
-        plt.figure(figsize=(12, 6))
-
-        # Plot one line per file
-        for file_name, group in df.groupby("Source_File"):
-            plt.plot(
-                group["Date"],
-                group["Exposure"],
-                label=file_name
-            )
-
-        plt.title("Consolidated Risk Exposure Trend")
-        plt.xlabel("Date")
-        plt.ylabel("Exposure")
-        plt.legend()
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-
-        plt.savefig(chart_path)
-        plt.close()
-
-        logger.info("Multi-line trend chart generated successfully.")
-
-    except Exception as e:
-        logger.error(f"Chart generation failed: {str(e)}")
+root.mainloop()
