@@ -1,4 +1,5 @@
 ```
+
 import os
 import sys
 import pandas as pd
@@ -7,14 +8,14 @@ from tkinter import filedialog, messagebox, ttk
 from pyxlsb import open_workbook
 
 # ----------------------------
-# CONFIGURATION
+# CONFIG
 # ----------------------------
 
 list_type = ["", "NA", "N/A", "None"]
 list_prodcode = ["P100", "P200", "P300", "P400"]
 
 # ----------------------------
-# HELPER FUNCTIONS
+# HELPERS
 # ----------------------------
 
 def get_excel_files(folder):
@@ -45,10 +46,10 @@ def read_sheet(file, sheet):
         return pd.read_excel(file, sheet_name=sheet, header=6, engine="openpyxl")
 
 
-def read_c3(file, sheet):
+def read_cell(file, sheet, row, col):
     try:
         df = pd.read_excel(file, sheet_name=sheet, header=None)
-        return df.iloc[2, 2]
+        return df.iloc[row, col]
     except:
         return None
 
@@ -60,7 +61,7 @@ def ask_product_code(file, sheet):
 
     tk.Label(
         popup,
-        text=f"C3 is empty\n\nFile: {os.path.basename(file)}\nSheet: {sheet}",
+        text=f"Product required\n\nFile: {os.path.basename(file)}\nSheet: {sheet}",
         justify="left"
     ).pack(padx=20, pady=10)
 
@@ -87,26 +88,20 @@ def ask_product_code(file, sheet):
     return selected.get()
 
 # ----------------------------
-# MAIN PROCESSING
+# PROCESSING
 # ----------------------------
 
-def process_files(folder, selected_sheets):
+def process_files(folder, selection_dict):
 
     try:
-        files = get_excel_files(folder)
         all_data = []
         header_reference = None
 
-        for file in files:
-            sheets = get_sheets(file)
+        for file, sheets in selection_dict.items():
 
-            for sheet in selected_sheets:
-                if sheet not in sheets:
-                    continue
+            for sheet in sheets:
 
                 df = read_sheet(file, sheet)
-
-                # Remove fully empty rows
                 df = df.dropna(how="all")
 
                 # Header validation
@@ -120,21 +115,25 @@ def process_files(folder, selected_sheets):
                         )
                         return
 
-                # Read C3
-                c3 = read_c3(file, sheet)
-
-                if pd.isna(c3) or str(c3).strip() == "":
-                    c3 = ask_product_code(file, sheet)
-
                 # ----------------------------
-                # CORRECT PRODUCT COLUMN LOGIC
+                # PRODUCT LOGIC (FINAL CORRECT)
                 # ----------------------------
                 if "Product" in df.columns:
+
                     mask = (
                         df["Product"].isna() |
                         df["Product"].astype(str).str.strip().isin(list_type)
                     )
-                    df.loc[mask, "Product"] = c3
+
+                    if mask.any():
+
+                        # Read C4 (row index 3, col index 2)
+                        c4 = read_cell(file, sheet, 3, 2)
+
+                        if pd.isna(c4) or str(c4).strip() == "":
+                            c4 = ask_product_code(file, sheet)
+
+                        df.loc[mask, "Product"] = c4
 
                 # Remove Amount = 0
                 if "Amount" in df.columns:
@@ -163,9 +162,8 @@ def process_files(folder, selected_sheets):
         output_path = os.path.join(folder, "cleaned_output.csv")
         final_df.to_csv(output_path, index=False)
 
-        messagebox.showinfo("Success", f"File saved at:\n{output_path}")
+        messagebox.showinfo("Success", f"Saved at:\n{output_path}")
 
-        # Proper clean shutdown
         root.quit()
         root.destroy()
         sys.exit()
@@ -186,58 +184,76 @@ def browse_folder():
     files = get_excel_files(folder)
 
     if not files:
-        messagebox.showerror("Error", "No Excel files found in folder.")
+        messagebox.showerror("Error", "No Excel files found.")
         return
 
-    # Collect all unique sheets across all files
-    sheet_set = set()
-    for file in files:
-        sheet_set.update(get_sheets(file))
-
-    sheet_list = sorted(list(sheet_set))
-
-    # Single multi-select window
     sheet_window = tk.Toplevel(root)
-    sheet_window.title("Select Sheets")
+    sheet_window.title("Select Sheets Per File")
     sheet_window.grab_set()
 
-    tk.Label(sheet_window, text="Select Sheets to Process").pack(pady=10)
+    canvas = tk.Canvas(sheet_window)
+    scrollbar = tk.Scrollbar(sheet_window, orient="vertical", command=canvas.yview)
+    frame = tk.Frame(canvas)
 
-    listbox = tk.Listbox(
-        sheet_window,
-        selectmode=tk.MULTIPLE,
-        width=50,
-        height=15
+    frame.bind(
+        "<Configure>",
+        lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
     )
-    listbox.pack(padx=20, pady=10)
 
-    for idx, sheet in enumerate(sheet_list):
-        listbox.insert(tk.END, sheet)
-        if sheet == "IncomeSubtype":
-            listbox.selection_set(idx)
+    canvas.create_window((0, 0), window=frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+
+    selection_vars = {}
+
+    for row, file in enumerate(files):
+
+        tk.Label(frame, text=os.path.basename(file), width=30, anchor="w").grid(row=row, column=0, sticky="w")
+
+        sheets = get_sheets(file)
+        selection_vars[file] = {}
+
+        for col, sheet in enumerate(sheets):
+
+            var = tk.BooleanVar()
+
+            if sheet == "IncomeSubtype":
+                var.set(True)
+
+            chk = tk.Checkbutton(frame, text=sheet, variable=var)
+            chk.grid(row=row, column=col + 1, sticky="w")
+
+            selection_vars[file][sheet] = var
 
     def submit():
-        selected_indices = listbox.curselection()
 
-        if not selected_indices:
+        selection_dict = {}
+
+        for file, sheets in selection_vars.items():
+            selected = [
+                sheet for sheet, var in sheets.items() if var.get()
+            ]
+            if selected:
+                selection_dict[file] = selected
+
+        if not selection_dict:
             messagebox.showerror("Error", "Please select at least one sheet.")
             return
 
-        selected_sheets = [sheet_list[i] for i in selected_indices]
         sheet_window.destroy()
-        process_files(folder, selected_sheets)
+        process_files(folder, selection_dict)
 
     tk.Button(sheet_window, text="Submit", command=submit).pack(pady=10)
 
 # ----------------------------
-# RUN APPLICATION
+# RUN
 # ----------------------------
 
 root = tk.Tk()
 root.title("Excel Product Cleaner")
-root.geometry("400x200")
-
-root.protocol("WM_DELETE_WINDOW", root.destroy)
+root.geometry("500x200")
 
 tk.Label(root, text="Select Folder Containing Excel Files").pack(pady=20)
 tk.Button(root, text="Browse Folder", command=browse_folder).pack(pady=10)
