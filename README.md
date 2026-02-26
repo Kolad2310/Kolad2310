@@ -52,6 +52,7 @@ def read_cell(file, sheet, row, col):
     except:
         return None
 
+
 # ----------------------------
 # POPUPS
 # ----------------------------
@@ -117,15 +118,17 @@ def ask_usd_rate():
     return float(rate_var.get())
 
 # ----------------------------
-# PROCESSING
+# MAIN PROCESSING
 # ----------------------------
 
 def process_files(folder, selection_dict):
 
     try:
-        all_data = []
+        clean_data = []
+        exception_data = []
+        recon_records = []
         header_reference = None
-        usd_rate = None  # <-- Store rate once
+        usd_rate = None
 
         for file, sheets in selection_dict.items():
 
@@ -133,8 +136,11 @@ def process_files(folder, selection_dict):
 
                 df = read_sheet(file, sheet)
                 df = df.dropna(how="all")
+                original_df = df.copy()
 
+                # ----------------------------
                 # Header validation
+                # ----------------------------
                 if header_reference is None:
                     header_reference = list(df.columns)
                 else:
@@ -146,7 +152,7 @@ def process_files(folder, selection_dict):
                         return
 
                 # ----------------------------
-                # USD CHECK
+                # USD Conversion (ask once)
                 # ----------------------------
                 try:
                     currency = df.iloc[3, 4]
@@ -163,7 +169,7 @@ def process_files(folder, selection_dict):
                         df["Amount"] = df["Amount"] / usd_rate
 
                 # ----------------------------
-                # PRODUCT LOGIC
+                # PRODUCT LOGIC (C4 → Dropdown)
                 # ----------------------------
                 if "Product" in df.columns:
 
@@ -181,32 +187,75 @@ def process_files(folder, selection_dict):
 
                         df.loc[mask, "Product"] = c4
 
-                # Remove Amount = 0
+                # ----------------------------
+                # EXCEPTION LOGIC
+                # ----------------------------
+
+                df["Exception_Reason"] = ""
+
                 if "Amount" in df.columns:
-                    df = df[df["Amount"] != 0]
+                    zero_mask = df["Amount"] == 0
+                    df.loc[zero_mask, "Exception_Reason"] += "Zero Amount; "
 
-                # Remove non-numeric Customer Number
                 if "Customer Number" in df.columns:
-                    df = df[
-                        df["Customer Number"]
-                        .astype(str)
-                        .str.strip()
-                        .str.isnumeric()
-                    ]
+                    cust_mask = ~df["Customer Number"].astype(str).str.strip().str.isnumeric()
+                    df.loc[cust_mask, "Exception_Reason"] += "Invalid Customer; "
 
-                df["Source File"] = os.path.basename(file)
-                df["Source Sheet"] = sheet
+                exceptions = df[df["Exception_Reason"] != ""].copy()
+                clean = df[df["Exception_Reason"] == ""].copy()
 
-                all_data.append(df)
+                for d in [exceptions, clean]:
+                    d["Source File"] = os.path.basename(file)
+                    d["Source Sheet"] = sheet
 
-        if not all_data:
+                clean_data.append(clean)
+                exception_data.append(exceptions)
+
+                # ----------------------------
+                # RECONCILIATION
+                # ----------------------------
+
+                if "Product" in original_df.columns and "Amount" in original_df.columns:
+
+                    original_df["Amount"] = pd.to_numeric(original_df["Amount"], errors="coerce")
+
+                    if str(currency).strip().upper() == "USD" and usd_rate:
+                        original_df["Amount"] = original_df["Amount"] / usd_rate
+
+                    product_groups = original_df.groupby("Product")["Amount"].sum().reset_index()
+
+                    for _, row in product_groups.iterrows():
+
+                        product = row["Product"]
+                        input_total = row["Amount"]
+
+                        clean_total = clean[clean["Product"] == product]["Amount"].sum()
+                        exc_total = exceptions[exceptions["Product"] == product]["Amount"].sum()
+
+                        check_value = input_total - (clean_total + exc_total)
+
+                        recon_records.append({
+                            "File Name": os.path.basename(file),
+                            "Product": product,
+                            "Input Total": input_total,
+                            "Exception Total": exc_total,
+                            "Check (Should be 0)": check_value
+                        })
+
+        if not clean_data:
             messagebox.showwarning("No Data", "No valid data found.")
             return
 
-        final_df = pd.concat(all_data, ignore_index=True)
+        final_clean = pd.concat(clean_data, ignore_index=True)
+        final_exceptions = pd.concat(exception_data, ignore_index=True)
+        recon_df = pd.DataFrame(recon_records)
 
-        output_path = os.path.join(folder, "cleaned_output.csv")
-        final_df.to_csv(output_path, index=False)
+        output_path = os.path.join(folder, "processed_output.xlsx")
+
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            final_clean.to_excel(writer, sheet_name="Clean_Data", index=False)
+            final_exceptions.to_excel(writer, sheet_name="Exceptions", index=False)
+            recon_df.to_excel(writer, sheet_name="Reconciliation", index=False)
 
         messagebox.showinfo("Success", f"Saved at:\n{output_path}")
 
@@ -216,6 +265,7 @@ def process_files(folder, selection_dict):
 
     except Exception as e:
         messagebox.showerror("Error", str(e))
+
 
 # ----------------------------
 # GUI
