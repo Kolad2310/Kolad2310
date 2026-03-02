@@ -5,6 +5,7 @@ import pandas as pd
 import duckdb
 import os
 from datetime import datetime
+import traceback
 
 # =====================================================
 # FILE STORAGE
@@ -34,24 +35,110 @@ def select_files(key):
         labels[key].config(text=f"{len(files)} files selected")
 
 # =====================================================
-# FAST HEADER DETECTION
+# ROBUST HEADER DETECTION
 # =====================================================
-def detect_header_fast(df):
-    for i in range(5, min(13, len(df))):
-        row = df.iloc[i].astype(str).str.lower().str.strip().tolist()
-        if (
-            ("year" in row and "entity" in row and "currency" in row)
-            or
-            ("mi_year" in row and "mi_entity" in row and "mi_currency" in row)
-        ):
+def detect_header_robust(df):
+
+    def normalize(val):
+        return (
+            str(val)
+            .lower()
+            .replace("_", "")
+            .replace(" ", "")
+            .strip()
+        )
+
+    def is_header(row_values):
+        normalized = [normalize(v) for v in row_values]
+
+        has_year = any("year" in v for v in normalized)
+        has_entity = any("entity" in v for v in normalized)
+        has_currency = any(
+            x in v for v in normalized
+            for x in ["currency", "curr", "ccy"]
+        )
+
+        return has_year and has_entity and has_currency
+
+    for i in range(0, min(40, len(df))):
+        if is_header(df.iloc[i].tolist()):
             return i
+
     return None
 
 # =====================================================
-# LOAD CATEGORY (FIXED SAFE VERSION)
+# EXPORT HEADER DIAGNOSTICS
 # =====================================================
-def load_category_fast(file_list, table_name,
-                       progress_bar, step, status_label):
+def export_all_headers():
+
+    header_records = []
+
+    for category, files in file_store.items():
+
+        for file in files:
+
+            try:
+                xls = pd.ExcelFile(file)
+
+                for sheet in xls.sheet_names:
+
+                    preview = pd.read_excel(
+                        file,
+                        sheet_name=sheet,
+                        header=None,
+                        nrows=50
+                    )
+
+                    header_row = detect_header_robust(preview)
+
+                    if header_row is None:
+                        header_records.append({
+                            "Category": category,
+                            "File": os.path.basename(file),
+                            "Sheet": sheet,
+                            "Header_Row": "NOT FOUND",
+                            "Columns": "",
+                            "Error": "Header not detected"
+                        })
+                        continue
+
+                    df = pd.read_excel(
+                        file,
+                        sheet_name=sheet,
+                        header=header_row,
+                        nrows=1
+                    )
+
+                    header_records.append({
+                        "Category": category,
+                        "File": os.path.basename(file),
+                        "Sheet": sheet,
+                        "Header_Row": header_row + 1,
+                        "Columns": " | ".join(df.columns.astype(str)),
+                        "Error": ""
+                    })
+
+            except Exception as e:
+                header_records.append({
+                    "Category": category,
+                    "File": os.path.basename(file),
+                    "Sheet": "ERROR",
+                    "Header_Row": "",
+                    "Columns": "",
+                    "Error": str(e)
+                })
+
+    if header_records:
+        pd.DataFrame(header_records).to_excel(
+            "Header_Diagnostics.xlsx",
+            index=False
+        )
+
+# =====================================================
+# LOAD CATEGORY SAFELY
+# =====================================================
+def load_category(file_list, table_name,
+                  progress_bar, step, status_label):
 
     all_dfs = []
 
@@ -70,10 +157,10 @@ def load_category_fast(file_list, table_name,
                 file,
                 sheet_name=sheet,
                 header=None,
-                nrows=15
+                nrows=50
             )
 
-            header_row = detect_header_fast(preview)
+            header_row = detect_header_robust(preview)
 
             if header_row is None:
                 continue
@@ -95,10 +182,9 @@ def load_category_fast(file_list, table_name,
             df["Source_File"] = os.path.basename(file)
             df["Source_Sheet"] = sheet
 
-            # =====================================================
-            # ONE TIME ADJUSTMENT (DELETE LATER)
-            # Divide PBT Actuals by 1000
-            # =====================================================
+            # =============================================
+            # ONE TIME PBT ADJUSTMENT (DELETE LATER)
+            # =============================================
             if table_name == "PBT_Actuals":
                 numeric_cols = df.select_dtypes(
                     include=["number"]
@@ -108,7 +194,7 @@ def load_category_fast(file_list, table_name,
                     if c.lower() != "year"
                 ]
                 df[numeric_cols] = df[numeric_cols] / 1000
-            # =====================================================
+            # =============================================
 
             all_dfs.append(df)
 
@@ -125,120 +211,112 @@ def load_category_fast(file_list, table_name,
 # =====================================================
 def start_processing():
 
-    root.destroy()
+    try:
 
-    progress_window = tk.Tk()
-    progress_window.title("Ultra Fast Processing")
-    progress_window.geometry("650x220")
+        export_all_headers()
 
-    tk.Label(
-        progress_window,
-        text="DuckDB Processing Running...",
-        font=("Arial", 11, "bold")
-    ).pack(pady=10)
+        root.destroy()
 
-    progress_bar = ttk.Progressbar(progress_window, length=600)
-    progress_bar.pack(pady=10)
+        progress_window = tk.Tk()
+        progress_window.title("Processing")
+        progress_window.geometry("650x220")
 
-    status_label = tk.Label(progress_window, text="")
-    status_label.pack()
+        progress_bar = ttk.Progressbar(progress_window, length=600)
+        progress_bar.pack(pady=10)
 
-    total_files = sum(len(v) for v in file_store.values())
-    if total_files == 0:
-        messagebox.showerror("Error", "No files selected!")
-        return
+        status_label = tk.Label(progress_window, text="")
+        status_label.pack()
 
-    step = 100 / total_files
+        total_files = sum(len(v) for v in file_store.values())
 
-    # LOAD ALL CATEGORIES SAFELY
-    tables = {}
+        if total_files == 0:
+            messagebox.showerror("Error", "No files selected!")
+            return
 
-    for key in file_store:
-        tables[key] = load_category_fast(
-            file_store[key],
-            key,
-            progress_bar,
-            step,
-            status_label
-        )
+        step = 100 / total_files
 
-    status_label.config(text="Registering Tables in DuckDB...")
-    progress_bar.update()
+        tables = {}
 
-    con = duckdb.connect(database=":memory:")
-    con.execute("PRAGMA threads=8")
+        for key in file_store:
+            tables[key] = load_category(
+                file_store[key],
+                key,
+                progress_bar,
+                step,
+                status_label
+            )
 
-    # Register only non-empty tables
-    for name, df in tables.items():
-        if not df.empty:
+        # Align schemas
+        all_columns = set()
+        for df in tables.values():
+            if not df.empty:
+                all_columns.update(df.columns)
+
+        all_columns = list(all_columns)
+
+        for key in tables:
+            if tables[key].empty:
+                tables[key] = pd.DataFrame(columns=all_columns)
+            else:
+                for col in all_columns:
+                    if col not in tables[key].columns:
+                        tables[key][col] = None
+                tables[key] = tables[key][all_columns]
+
+        con = duckdb.connect(database=":memory:")
+        con.execute("PRAGMA threads=8")
+
+        for name, df in tables.items():
             con.register(name, df)
 
-    # CONSOLIDATION
-    queries = {
-        "RWA Actuals":
-            "SELECT * FROM RWA_Actuals",
-        "RWA Plan":
-            "SELECT * FROM RWA_Plan",
-        "PBT_BS Actuals":
-            "SELECT * FROM PBT_Actuals UNION ALL SELECT * FROM BS_Actuals",
-        "PBT_BS Plan":
-            "SELECT * FROM PBT_Plan UNION ALL SELECT * FROM BS_Plan",
-        "AVBS_SD Actuals":
-            "SELECT * FROM AVBS_Actuals UNION ALL SELECT * FROM SD_Actuals",
-        "AVBS_SD Plan":
-            "SELECT * FROM AVBS_Plan UNION ALL SELECT * FROM SD_Plan"
-    }
-
-    output_name = (
-        f"Fixed_DuckDB_Output_"
-        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    )
-
-    with pd.ExcelWriter(output_name, engine="openpyxl") as writer:
-
-        for sheet, query in queries.items():
-            try:
-                df = con.execute(query).df()
-            except:
-                df = pd.DataFrame()
-
-            df.to_excel(writer, sheet_name=sheet, index=False)
-
-        # Reconciliation
-        recon_query = """
-        SELECT Source_File, Source_Sheet, year, COUNT(*) AS rows_loaded
-        FROM (
-            SELECT * FROM RWA_Actuals
-            UNION ALL SELECT * FROM RWA_Plan
-            UNION ALL SELECT * FROM PBT_Actuals
-            UNION ALL SELECT * FROM BS_Actuals
-            UNION ALL SELECT * FROM AVBS_Actuals
-            UNION ALL SELECT * FROM SD_Actuals
-            UNION ALL SELECT * FROM AVBS_Plan
-            UNION ALL SELECT * FROM SD_Plan
+        output_name = (
+            f"Final_Output_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         )
-        GROUP BY Source_File, Source_Sheet, year
-        """
 
-        try:
-            recon_df = con.execute(recon_query).df()
-        except:
-            recon_df = pd.DataFrame()
+        with pd.ExcelWriter(output_name, engine="openpyxl") as writer:
 
-        recon_df.to_excel(writer,
-                          sheet_name="Reconciliation",
-                          index=False)
+            queries = {
+                "RWA Actuals":
+                    "SELECT * FROM RWA_Actuals",
+                "RWA Plan":
+                    "SELECT * FROM RWA_Plan",
+                "PBT_BS Actuals":
+                    "SELECT * FROM PBT_Actuals UNION ALL SELECT * FROM BS_Actuals",
+                "PBT_BS Plan":
+                    "SELECT * FROM PBT_Plan UNION ALL SELECT * FROM BS_Plan",
+                "AVBS_SD Actuals":
+                    "SELECT * FROM AVBS_Actuals UNION ALL SELECT * FROM SD_Actuals",
+                "AVBS_SD Plan":
+                    "SELECT * FROM AVBS_Plan UNION ALL SELECT * FROM SD_Plan"
+            }
 
-    progress_bar["value"] = 100
-    status_label.config(
-        text=f"Completed! File Created: {output_name}"
-    )
+            for sheet, query in queries.items():
+                df = con.execute(query).df()
+                df.to_excel(writer, sheet_name=sheet, index=False)
+
+        progress_bar["value"] = 100
+        status_label.config(
+            text=f"Completed! File Created: {output_name}"
+        )
+
+    except Exception as e:
+
+        error_message = traceback.format_exc()
+
+        with open("Error_Log.txt", "w") as f:
+            f.write(error_message)
+
+        messagebox.showerror(
+            "Processing Failed",
+            f"An error occurred.\nCheck Error_Log.txt"
+        )
 
 # =====================================================
 # GUI
 # =====================================================
 root = tk.Tk()
-root.title("Ultra Fast 1GB Excel Consolidation Tool")
+root.title("1GB Consolidation Tool (Diagnostic Mode)")
 root.geometry("800x600")
 
 tk.Label(root,
