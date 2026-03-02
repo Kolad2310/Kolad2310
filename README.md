@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime
 
 # -----------------------------
-# GLOBAL FILE STORE
+# FILE STORAGE
 # -----------------------------
 file_store = {
     "RWA_Actuals": [],
@@ -32,10 +32,10 @@ def select_files(key):
         labels[key].config(text=f"{len(files)} files selected")
 
 # -----------------------------
-# HEADER DETECTION (FAST)
+# FAST HEADER DETECTION (Rows 6–13 only)
 # -----------------------------
-def detect_header(df):
-    for i in range(len(df)):
+def detect_header_fast(df):
+    for i in range(5, min(13, len(df))):  # rows 6–13
         row = df.iloc[i].astype(str).str.lower().str.strip().tolist()
         if (
             ("year" in row and "entity" in row and "currency" in row)
@@ -46,17 +46,15 @@ def detect_header(df):
     return None
 
 # -----------------------------
-# LOAD TO SQLITE
+# LOAD DATA INTO SQLITE
 # -----------------------------
-def load_category_to_sql(conn, file_list, table_name, progress_bar, step):
-    cursor = conn.cursor()
-
+def load_category(conn, file_list, table_name, progress_bar, step):
     for file in file_list:
         xls = pd.ExcelFile(file)
 
         for sheet in xls.sheet_names:
-            raw = pd.read_excel(file, sheet_name=sheet, header=None)
-            header_row = detect_header(raw)
+            preview = pd.read_excel(file, sheet_name=sheet, header=None, nrows=15)
+            header_row = detect_header_fast(preview)
 
             if header_row is None:
                 continue
@@ -79,6 +77,48 @@ def load_category_to_sql(conn, file_list, table_name, progress_bar, step):
         progress_bar.update()
 
 # -----------------------------
+# SAFE UNION
+# -----------------------------
+def safe_union(conn, tables):
+    existing = []
+    cursor = conn.cursor()
+
+    for t in tables:
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,))
+        if cursor.fetchone():
+            existing.append(t)
+
+    if not existing:
+        return pd.DataFrame()
+
+    union_query = " UNION ALL ".join([f"SELECT * FROM {t}" for t in existing])
+    return pd.read_sql_query(union_query, conn)
+
+# -----------------------------
+# RECONCILIATION
+# -----------------------------
+def create_reconciliation(df, category, dtype):
+    if df.empty:
+        return pd.DataFrame()
+
+    month_cols = [c for c in df.columns if c.upper().startswith(("M", "YTD"))]
+
+    recon = []
+    for col in month_cols:
+        temp = df.groupby(
+            ["Source_File", "Source_Sheet", "year"],
+            dropna=False
+        )[col].sum().reset_index()
+
+        temp["Month_Column"] = col
+        temp["Category"] = category
+        temp["Type"] = dtype
+        temp.rename(columns={col: "Value"}, inplace=True)
+        recon.append(temp)
+
+    return pd.concat(recon, ignore_index=True) if recon else pd.DataFrame()
+
+# -----------------------------
 # MAIN PROCESS
 # -----------------------------
 def start_processing():
@@ -88,7 +128,7 @@ def start_processing():
     progress_window.title("Processing")
     progress_window.geometry("500x150")
 
-    tk.Label(progress_window, text="Processing with SQL Engine...").pack(pady=10)
+    tk.Label(progress_window, text="SQL Fast Consolidation Running...").pack(pady=10)
 
     progress_bar = ttk.Progressbar(progress_window, length=400, mode="determinate")
     progress_bar.pack(pady=10)
@@ -99,84 +139,45 @@ def start_processing():
         return
 
     step = 100 / total_files
-
     conn = sqlite3.connect(":memory:")
 
-    # Load all categories
+    # Load All
     for key in file_store:
-        load_category_to_sql(conn, file_store[key], key, progress_bar, step)
+        load_category(conn, file_store[key], key, progress_bar, step)
 
-    # -----------------------------
-    # SQL CONSOLIDATION
-    # -----------------------------
-    queries = {
-        "RWA Actuals": "SELECT * FROM RWA_Actuals",
-        "RWA Plan": "SELECT * FROM RWA_Plan",
-        "PBT_BS Actuals": """
-            SELECT * FROM PBT_Actuals
-            UNION ALL
-            SELECT * FROM BS_Actuals
-        """,
-        "PBT_BS Plan": """
-            SELECT * FROM PBT_Plan
-            UNION ALL
-            SELECT * FROM BS_Plan
-        """,
-        "AVBS_SD Actuals": """
-            SELECT * FROM AVBS_Actuals
-            UNION ALL
-            SELECT * FROM SD_Actuals
-        """,
-        "AVBS_SD Plan": """
-            SELECT * FROM AVBS_Plan
-            UNION ALL
-            SELECT * FROM SD_Plan
-        """
-    }
+    # Consolidations
+    rwa_actual = safe_union(conn, ["RWA_Actuals"])
+    rwa_plan = safe_union(conn, ["RWA_Plan"])
 
-    output_name = f"Consolidated_SQL_Output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    pbt_bs_actual = safe_union(conn, ["PBT_Actuals", "BS_Actuals"])
+    pbt_bs_plan = safe_union(conn, ["PBT_Plan", "BS_Plan"])
+
+    avbs_sd_actual = safe_union(conn, ["AVBS_Actuals", "SD_Actuals"])
+    avbs_sd_plan = safe_union(conn, ["AVBS_Plan", "SD_Plan"])
+
+    # Reconciliation
+    recon_frames = [
+        create_reconciliation(rwa_actual, "RWA", "Actual"),
+        create_reconciliation(rwa_plan, "RWA", "Plan"),
+        create_reconciliation(pbt_bs_actual, "PBT_BS", "Actual"),
+        create_reconciliation(pbt_bs_plan, "PBT_BS", "Plan"),
+        create_reconciliation(avbs_sd_actual, "AVBS_SD", "Actual"),
+        create_reconciliation(avbs_sd_plan, "AVBS_SD", "Plan"),
+    ]
+
+    reconciliation_df = pd.concat(recon_frames, ignore_index=True)
+
+    # Write Output
+    output_name = f"Fast_SQL_Output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
 
     with pd.ExcelWriter(output_name, engine="openpyxl") as writer:
-
-        consolidated_tables = {}
-
-        for sheet_name, query in queries.items():
-            try:
-                df = pd.read_sql_query(query, conn)
-            except:
-                df = pd.DataFrame()
-
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-            consolidated_tables[sheet_name] = df
-
-        # -----------------------------
-        # RECONCILIATION (SQL GROUP BY)
-        # -----------------------------
-        recon_query = """
-        SELECT 
-            Source_File,
-            Source_Sheet,
-            year,
-            COUNT(*) as Row_Count
-        FROM (
-            SELECT * FROM RWA_Actuals
-            UNION ALL SELECT * FROM RWA_Plan
-            UNION ALL SELECT * FROM PBT_Actuals
-            UNION ALL SELECT * FROM BS_Actuals
-            UNION ALL SELECT * FROM AVBS_Actuals
-            UNION ALL SELECT * FROM SD_Actuals
-            UNION ALL SELECT * FROM AVBS_Plan
-            UNION ALL SELECT * FROM SD_Plan
-        )
-        GROUP BY Source_File, Source_Sheet, year
-        """
-
-        try:
-            recon_df = pd.read_sql_query(recon_query, conn)
-        except:
-            recon_df = pd.DataFrame()
-
-        recon_df.to_excel(writer, sheet_name="Reconciliation", index=False)
+        rwa_actual.to_excel(writer, "RWA Actuals", index=False)
+        rwa_plan.to_excel(writer, "RWA Plan", index=False)
+        pbt_bs_actual.to_excel(writer, "PBT_BS Actuals", index=False)
+        pbt_bs_plan.to_excel(writer, "PBT_BS Plan", index=False)
+        avbs_sd_actual.to_excel(writer, "AVBS_SD Actuals", index=False)
+        avbs_sd_plan.to_excel(writer, "AVBS_SD Plan", index=False)
+        reconciliation_df.to_excel(writer, "Reconciliation", index=False)
 
     progress_bar["value"] = 100
     tk.Label(progress_window, text="Completed Successfully!", fg="green").pack(pady=10)
@@ -185,7 +186,7 @@ def start_processing():
 # GUI
 # -----------------------------
 root = tk.Tk()
-root.title("SQL-Based Financial Consolidation")
+root.title("High-Speed SQL Consolidation Tool")
 root.geometry("750x550")
 
 tk.Label(root, text="Select Files",
