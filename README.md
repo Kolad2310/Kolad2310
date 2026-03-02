@@ -2,13 +2,13 @@
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 import pandas as pd
+import duckdb
 import os
-import sqlite3
 from datetime import datetime
 
-# -----------------------------
+# =====================================================
 # FILE STORAGE
-# -----------------------------
+# =====================================================
 file_store = {
     "RWA_Actuals": [],
     "RWA_Plan": [],
@@ -22,21 +22,24 @@ file_store = {
     "BS_Plan": []
 }
 
-# -----------------------------
+# =====================================================
 # FILE SELECTOR
-# -----------------------------
+# =====================================================
 def select_files(key):
-    files = filedialog.askopenfilenames(filetypes=[("Excel files", "*.xlsx *.xls")])
+    files = filedialog.askopenfilenames(
+        filetypes=[("Excel files", "*.xlsx *.xls")]
+    )
     if files:
         file_store[key] = list(files)
         labels[key].config(text=f"{len(files)} files selected")
 
-# -----------------------------
-# FAST HEADER DETECTION (Rows 6–13 only)
-# -----------------------------
+# =====================================================
+# FAST HEADER DETECTION (Rows 6–13 Only)
+# =====================================================
 def detect_header_fast(df):
-    for i in range(5, min(13, len(df))):  # rows 6–13
+    for i in range(5, min(13, len(df))):  # Excel rows 6–13
         row = df.iloc[i].astype(str).str.lower().str.strip().tolist()
+
         if (
             ("year" in row and "entity" in row and "currency" in row)
             or
@@ -45,21 +48,46 @@ def detect_header_fast(df):
             return i
     return None
 
-# -----------------------------
-# LOAD DATA INTO SQLITE
-# -----------------------------
-def load_category(conn, file_list, table_name, progress_bar, step):
+# =====================================================
+# LOAD INTO DUCKDB (FAST)
+# =====================================================
+def load_into_duckdb(con, file_list, table_name,
+                     progress_bar, step, status_label):
+
     for file in file_list:
+
+        status_label.config(
+            text=f"Processing {table_name} → {os.path.basename(file)}"
+        )
+        progress_bar.update()
+
         xls = pd.ExcelFile(file)
 
         for sheet in xls.sheet_names:
-            preview = pd.read_excel(file, sheet_name=sheet, header=None, nrows=15)
+
+            status_label.config(
+                text=f"{table_name} → {os.path.basename(file)} | Sheet: {sheet}"
+            )
+            progress_bar.update()
+
+            preview = pd.read_excel(
+                file,
+                sheet_name=sheet,
+                header=None,
+                nrows=15
+            )
+
             header_row = detect_header_fast(preview)
 
             if header_row is None:
                 continue
 
-            df = pd.read_excel(file, sheet_name=sheet, header=header_row)
+            df = pd.read_excel(
+                file,
+                sheet_name=sheet,
+                header=header_row
+            )
+
             df.columns = df.columns.str.strip().str.lower()
 
             df.rename(columns={
@@ -71,156 +99,201 @@ def load_category(conn, file_list, table_name, progress_bar, step):
             df["Source_File"] = os.path.basename(file)
             df["Source_Sheet"] = sheet
 
-            df.to_sql(table_name, conn, if_exists="append", index=False)
+            # =====================================================
+            # ===== ONE TIME ADJUSTMENT (DELETE LATER) ============
+            # Divide PBT Actuals numeric columns by 1000
+            # =====================================================
+            if table_name == "PBT_Actuals":
+                numeric_cols = df.select_dtypes(
+                    include=["number"]
+                ).columns
+
+                numeric_cols = [
+                    c for c in numeric_cols
+                    if c.lower() != "year"
+                ]
+
+                df[numeric_cols] = df[numeric_cols] / 1000
+            # =====================================================
+
+            con.register("temp_df", df)
+
+            con.execute(f"""
+                CREATE TABLE IF NOT EXISTS {table_name}
+                AS SELECT * FROM temp_df LIMIT 0
+            """)
+
+            con.execute(f"""
+                INSERT INTO {table_name}
+                SELECT * FROM temp_df
+            """)
 
         progress_bar["value"] += step
         progress_bar.update()
 
-# -----------------------------
-# SAFE UNION
-# -----------------------------
-def safe_union(conn, tables):
-    existing = []
-    cursor = conn.cursor()
+# =====================================================
+# RECONCILIATION (FAST SQL AGGREGATION)
+# =====================================================
+def create_reconciliation(con):
 
-    for t in tables:
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,))
-        if cursor.fetchone():
-            existing.append(t)
+    recon_query = """
+    SELECT
+        Source_File,
+        Source_Sheet,
+        year,
+        COUNT(*) AS rows_loaded
+    FROM (
+        SELECT * FROM RWA_Actuals
+        UNION ALL SELECT * FROM RWA_Plan
+        UNION ALL SELECT * FROM PBT_Actuals
+        UNION ALL SELECT * FROM BS_Actuals
+        UNION ALL SELECT * FROM AVBS_Actuals
+        UNION ALL SELECT * FROM SD_Actuals
+        UNION ALL SELECT * FROM AVBS_Plan
+        UNION ALL SELECT * FROM SD_Plan
+    )
+    GROUP BY Source_File, Source_Sheet, year
+    """
 
-    if not existing:
+    try:
+        return con.execute(recon_query).df()
+    except:
         return pd.DataFrame()
 
-    union_query = " UNION ALL ".join([f"SELECT * FROM {t}" for t in existing])
-    return pd.read_sql_query(union_query, conn)
-
-# -----------------------------
-# RECONCILIATION
-# -----------------------------
-def create_reconciliation(df, category, dtype):
-    if df.empty:
-        return pd.DataFrame()
-
-    month_cols = [c for c in df.columns if c.upper().startswith(("M", "YTD"))]
-
-    recon = []
-    for col in month_cols:
-        temp = df.groupby(
-            ["Source_File", "Source_Sheet", "year"],
-            dropna=False
-        )[col].sum().reset_index()
-
-        temp["Month_Column"] = col
-        temp["Category"] = category
-        temp["Type"] = dtype
-        temp.rename(columns={col: "Value"}, inplace=True)
-        recon.append(temp)
-
-    return pd.concat(recon, ignore_index=True) if recon else pd.DataFrame()
-
-# -----------------------------
+# =====================================================
 # MAIN PROCESS
-# -----------------------------
+# =====================================================
 def start_processing():
+
     root.destroy()
 
     progress_window = tk.Tk()
-    progress_window.title("Processing")
-    progress_window.geometry("500x150")
+    progress_window.title("Ultra Fast 1GB Consolidation")
+    progress_window.geometry("650x220")
 
-    tk.Label(progress_window, text="SQL Fast Consolidation Running...").pack(pady=10)
+    tk.Label(
+        progress_window,
+        text="DuckDB Multi-Threaded Processing Running...",
+        font=("Arial", 11, "bold")
+    ).pack(pady=10)
 
-    progress_bar = ttk.Progressbar(progress_window, length=400, mode="determinate")
+    progress_bar = ttk.Progressbar(
+        progress_window,
+        length=600
+    )
     progress_bar.pack(pady=10)
 
+    status_label = tk.Label(progress_window, text="")
+    status_label.pack()
+
     total_files = sum(len(v) for v in file_store.values())
+
     if total_files == 0:
         messagebox.showerror("Error", "No files selected!")
         return
 
     step = 100 / total_files
-    conn = sqlite3.connect(":memory:")
 
-    # Load All
+    # DuckDB in-memory with multi-threading
+    con = duckdb.connect(database=":memory:")
+    con.execute("PRAGMA threads=8")  # Use multiple CPU cores
+
+    # Load All Categories
     for key in file_store:
-        load_category(conn, file_store[key], key, progress_bar, step)
+        load_into_duckdb(
+            con,
+            file_store[key],
+            key,
+            progress_bar,
+            step,
+            status_label
+        )
 
-    # Consolidations
-    rwa_actual = safe_union(conn, ["RWA_Actuals"])
-    rwa_plan = safe_union(conn, ["RWA_Plan"])
+    # =====================================================
+    # CONSOLIDATION QUERIES
+    # =====================================================
+    queries = {
+        "RWA Actuals":
+            "SELECT * FROM RWA_Actuals",
+        "RWA Plan":
+            "SELECT * FROM RWA_Plan",
+        "PBT_BS Actuals":
+            "SELECT * FROM PBT_Actuals UNION ALL SELECT * FROM BS_Actuals",
+        "PBT_BS Plan":
+            "SELECT * FROM PBT_Plan UNION ALL SELECT * FROM BS_Plan",
+        "AVBS_SD Actuals":
+            "SELECT * FROM AVBS_Actuals UNION ALL SELECT * FROM SD_Actuals",
+        "AVBS_SD Plan":
+            "SELECT * FROM AVBS_Plan UNION ALL SELECT * FROM SD_Plan"
+    }
 
-    pbt_bs_actual = safe_union(conn, ["PBT_Actuals", "BS_Actuals"])
-    pbt_bs_plan = safe_union(conn, ["PBT_Plan", "BS_Plan"])
+    status_label.config(text="Running Consolidation Queries...")
+    progress_bar.update()
 
-    avbs_sd_actual = safe_union(conn, ["AVBS_Actuals", "SD_Actuals"])
-    avbs_sd_plan = safe_union(conn, ["AVBS_Plan", "SD_Plan"])
-
-    # Reconciliation
-    recon_frames = [
-        create_reconciliation(rwa_actual, "RWA", "Actual"),
-        create_reconciliation(rwa_plan, "RWA", "Plan"),
-        create_reconciliation(pbt_bs_actual, "PBT_BS", "Actual"),
-        create_reconciliation(pbt_bs_plan, "PBT_BS", "Plan"),
-        create_reconciliation(avbs_sd_actual, "AVBS_SD", "Actual"),
-        create_reconciliation(avbs_sd_plan, "AVBS_SD", "Plan"),
-    ]
-
-    reconciliation_df = pd.concat(recon_frames, ignore_index=True)
-
-    # Write Output
-    output_name = f"Fast_SQL_Output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_name = (
+        f"DuckDB_1GB_Output_"
+        f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    )
 
     with pd.ExcelWriter(output_name, engine="openpyxl") as writer:
-        rwa_actual.to_excel(writer, "RWA Actuals", index=False)
-        rwa_plan.to_excel(writer, "RWA Plan", index=False)
-        pbt_bs_actual.to_excel(writer, "PBT_BS Actuals", index=False)
-        pbt_bs_plan.to_excel(writer, "PBT_BS Plan", index=False)
-        avbs_sd_actual.to_excel(writer, "AVBS_SD Actuals", index=False)
-        avbs_sd_plan.to_excel(writer, "AVBS_SD Plan", index=False)
-        reconciliation_df.to_excel(writer, "Reconciliation", index=False)
+
+        for sheet, query in queries.items():
+            try:
+                df = con.execute(query).df()
+            except:
+                df = pd.DataFrame()
+
+            df.to_excel(writer, sheet_name=sheet, index=False)
+
+        # Reconciliation
+        recon_df = create_reconciliation(con)
+        recon_df.to_excel(writer,
+                          sheet_name="Reconciliation",
+                          index=False)
 
     progress_bar["value"] = 100
-    tk.Label(progress_window, text="Completed Successfully!", fg="green").pack(pady=10)
+    status_label.config(
+        text=f"Completed! File Created: {output_name}"
+    )
 
-# -----------------------------
+# =====================================================
 # GUI
-# -----------------------------
+# =====================================================
 root = tk.Tk()
-root.title("High-Speed SQL Consolidation Tool")
-root.geometry("750x550")
+root.title("Ultra Fast 1GB Excel Consolidation Tool")
+root.geometry("800x600")
 
-tk.Label(root, text="Select Files",
-         font=("Arial", 14, "bold")).pack(pady=15)
+tk.Label(
+    root,
+    text="Select Files for Consolidation",
+    font=("Arial", 14, "bold")
+).pack(pady=15)
 
 frame = tk.Frame(root)
 frame.pack()
 
 labels = {}
 
-categories = [
-    ("RWA - Actuals", "RWA_Actuals"),
-    ("RWA - Plan", "RWA_Plan"),
-    ("SD - Actuals", "SD_Actuals"),
-    ("SD - Plan", "SD_Plan"),
-    ("AVBS - Actuals", "AVBS_Actuals"),
-    ("AVBS - Plan", "AVBS_Plan"),
-    ("PBT - Actuals", "PBT_Actuals"),
-    ("PBT - Plan", "PBT_Plan"),
-    ("BS - Actuals", "BS_Actuals"),
-    ("BS - Plan", "BS_Plan"),
-]
-
-for i, (text, key) in enumerate(categories):
-    tk.Label(frame, text=text, width=20, anchor="w").grid(row=i, column=0)
-    tk.Button(frame, text="Select Files",
-              command=lambda k=key: select_files(k)).grid(row=i, column=1)
-    lbl = tk.Label(frame, text="No files selected", width=25)
+for i, key in enumerate(file_store.keys()):
+    tk.Label(frame, text=key, width=22,
+             anchor="w").grid(row=i, column=0)
+    tk.Button(frame,
+              text="Select Files",
+              command=lambda k=key:
+              select_files(k)).grid(row=i, column=1)
+    lbl = tk.Label(frame,
+                   text="No files selected",
+                   width=25)
     lbl.grid(row=i, column=2)
     labels[key] = lbl
 
-tk.Button(root, text="Submit & Process",
-          command=start_processing,
-          bg="green", fg="white",
-          font=("Arial", 12, "bold")).pack(pady=20)
+tk.Button(
+    root,
+    text="Submit & Process",
+    command=start_processing,
+    bg="green",
+    fg="white",
+    font=("Arial", 12, "bold")
+).pack(pady=20)
 
 root.mainloop()
