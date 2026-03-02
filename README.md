@@ -34,12 +34,11 @@ def select_files(key):
         labels[key].config(text=f"{len(files)} files selected")
 
 # =====================================================
-# FAST HEADER DETECTION (Rows 6–13 Only)
+# FAST HEADER DETECTION
 # =====================================================
 def detect_header_fast(df):
-    for i in range(5, min(13, len(df))):  # Excel rows 6–13
+    for i in range(5, min(13, len(df))):
         row = df.iloc[i].astype(str).str.lower().str.strip().tolist()
-
         if (
             ("year" in row and "entity" in row and "currency" in row)
             or
@@ -49,10 +48,12 @@ def detect_header_fast(df):
     return None
 
 # =====================================================
-# LOAD INTO DUCKDB (FAST)
+# LOAD CATEGORY (FIXED SAFE VERSION)
 # =====================================================
-def load_into_duckdb(con, file_list, table_name,
-                     progress_bar, step, status_label):
+def load_category_fast(file_list, table_name,
+                       progress_bar, step, status_label):
+
+    all_dfs = []
 
     for file in file_list:
 
@@ -64,11 +65,6 @@ def load_into_duckdb(con, file_list, table_name,
         xls = pd.ExcelFile(file)
 
         for sheet in xls.sheet_names:
-
-            status_label.config(
-                text=f"{table_name} → {os.path.basename(file)} | Sheet: {sheet}"
-            )
-            progress_bar.update()
 
             preview = pd.read_excel(
                 file,
@@ -100,65 +96,29 @@ def load_into_duckdb(con, file_list, table_name,
             df["Source_Sheet"] = sheet
 
             # =====================================================
-            # ===== ONE TIME ADJUSTMENT (DELETE LATER) ============
-            # Divide PBT Actuals numeric columns by 1000
+            # ONE TIME ADJUSTMENT (DELETE LATER)
+            # Divide PBT Actuals by 1000
             # =====================================================
             if table_name == "PBT_Actuals":
                 numeric_cols = df.select_dtypes(
                     include=["number"]
                 ).columns
-
                 numeric_cols = [
                     c for c in numeric_cols
                     if c.lower() != "year"
                 ]
-
                 df[numeric_cols] = df[numeric_cols] / 1000
             # =====================================================
 
-            con.register("temp_df", df)
-
-            con.execute(f"""
-                CREATE TABLE IF NOT EXISTS {table_name}
-                AS SELECT * FROM temp_df LIMIT 0
-            """)
-
-            con.execute(f"""
-                INSERT INTO {table_name}
-                SELECT * FROM temp_df
-            """)
+            all_dfs.append(df)
 
         progress_bar["value"] += step
         progress_bar.update()
 
-# =====================================================
-# RECONCILIATION (FAST SQL AGGREGATION)
-# =====================================================
-def create_reconciliation(con):
+    if all_dfs:
+        return pd.concat(all_dfs, ignore_index=True)
 
-    recon_query = """
-    SELECT
-        Source_File,
-        Source_Sheet,
-        year,
-        COUNT(*) AS rows_loaded
-    FROM (
-        SELECT * FROM RWA_Actuals
-        UNION ALL SELECT * FROM RWA_Plan
-        UNION ALL SELECT * FROM PBT_Actuals
-        UNION ALL SELECT * FROM BS_Actuals
-        UNION ALL SELECT * FROM AVBS_Actuals
-        UNION ALL SELECT * FROM SD_Actuals
-        UNION ALL SELECT * FROM AVBS_Plan
-        UNION ALL SELECT * FROM SD_Plan
-    )
-    GROUP BY Source_File, Source_Sheet, year
-    """
-
-    try:
-        return con.execute(recon_query).df()
-    except:
-        return pd.DataFrame()
+    return pd.DataFrame()
 
 # =====================================================
 # MAIN PROCESS
@@ -168,40 +128,33 @@ def start_processing():
     root.destroy()
 
     progress_window = tk.Tk()
-    progress_window.title("Ultra Fast 1GB Consolidation")
+    progress_window.title("Ultra Fast Processing")
     progress_window.geometry("650x220")
 
     tk.Label(
         progress_window,
-        text="DuckDB Multi-Threaded Processing Running...",
+        text="DuckDB Processing Running...",
         font=("Arial", 11, "bold")
     ).pack(pady=10)
 
-    progress_bar = ttk.Progressbar(
-        progress_window,
-        length=600
-    )
+    progress_bar = ttk.Progressbar(progress_window, length=600)
     progress_bar.pack(pady=10)
 
     status_label = tk.Label(progress_window, text="")
     status_label.pack()
 
     total_files = sum(len(v) for v in file_store.values())
-
     if total_files == 0:
         messagebox.showerror("Error", "No files selected!")
         return
 
     step = 100 / total_files
 
-    # DuckDB in-memory with multi-threading
-    con = duckdb.connect(database=":memory:")
-    con.execute("PRAGMA threads=8")  # Use multiple CPU cores
+    # LOAD ALL CATEGORIES SAFELY
+    tables = {}
 
-    # Load All Categories
     for key in file_store:
-        load_into_duckdb(
-            con,
+        tables[key] = load_category_fast(
             file_store[key],
             key,
             progress_bar,
@@ -209,9 +162,18 @@ def start_processing():
             status_label
         )
 
-    # =====================================================
-    # CONSOLIDATION QUERIES
-    # =====================================================
+    status_label.config(text="Registering Tables in DuckDB...")
+    progress_bar.update()
+
+    con = duckdb.connect(database=":memory:")
+    con.execute("PRAGMA threads=8")
+
+    # Register only non-empty tables
+    for name, df in tables.items():
+        if not df.empty:
+            con.register(name, df)
+
+    # CONSOLIDATION
     queries = {
         "RWA Actuals":
             "SELECT * FROM RWA_Actuals",
@@ -227,11 +189,8 @@ def start_processing():
             "SELECT * FROM AVBS_Plan UNION ALL SELECT * FROM SD_Plan"
     }
 
-    status_label.config(text="Running Consolidation Queries...")
-    progress_bar.update()
-
     output_name = (
-        f"DuckDB_1GB_Output_"
+        f"Fixed_DuckDB_Output_"
         f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     )
 
@@ -246,7 +205,26 @@ def start_processing():
             df.to_excel(writer, sheet_name=sheet, index=False)
 
         # Reconciliation
-        recon_df = create_reconciliation(con)
+        recon_query = """
+        SELECT Source_File, Source_Sheet, year, COUNT(*) AS rows_loaded
+        FROM (
+            SELECT * FROM RWA_Actuals
+            UNION ALL SELECT * FROM RWA_Plan
+            UNION ALL SELECT * FROM PBT_Actuals
+            UNION ALL SELECT * FROM BS_Actuals
+            UNION ALL SELECT * FROM AVBS_Actuals
+            UNION ALL SELECT * FROM SD_Actuals
+            UNION ALL SELECT * FROM AVBS_Plan
+            UNION ALL SELECT * FROM SD_Plan
+        )
+        GROUP BY Source_File, Source_Sheet, year
+        """
+
+        try:
+            recon_df = con.execute(recon_query).df()
+        except:
+            recon_df = pd.DataFrame()
+
         recon_df.to_excel(writer,
                           sheet_name="Reconciliation",
                           index=False)
@@ -263,11 +241,9 @@ root = tk.Tk()
 root.title("Ultra Fast 1GB Excel Consolidation Tool")
 root.geometry("800x600")
 
-tk.Label(
-    root,
-    text="Select Files for Consolidation",
-    font=("Arial", 14, "bold")
-).pack(pady=15)
+tk.Label(root,
+         text="Select Files for Consolidation",
+         font=("Arial", 14, "bold")).pack(pady=15)
 
 frame = tk.Frame(root)
 frame.pack()
