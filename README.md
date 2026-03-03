@@ -193,7 +193,7 @@ def start_processing():
         log("Schema alignment completed")
 
         # =====================================================
-        # REGISTER ONCE
+        # REGISTER IN DUCKDB
         # =====================================================
         con = duckdb.connect(database=":memory:")
         for name, df in tables.items():
@@ -234,21 +234,24 @@ def start_processing():
             df = con.execute(query).df()
             log(f"Writing {sheet} → {len(df)} rows")
 
-            # ================= SAFE CONVERSION =================
+            # =====================================================
+            # SAFE CONVERSION FOR EXCEL
+            # =====================================================
             df = df.copy()
-            df = df.fillna("")
+            df = df.astype(object)
+            df = df.where(pd.notnull(df), None)
 
             for col in df.columns:
-                df[col] = df[col].astype(str)
-            # ===================================================
+                df[col] = df[col].apply(lambda x: "" if x is None else str(x))
+            # =====================================================
 
             worksheet = workbook.add_worksheet(sheet[:31])
 
-            # Headers
+            # Write headers
             for col_num, col_name in enumerate(df.columns):
                 worksheet.write(0, col_num, col_name)
 
-            # Rows
+            # Write rows
             for row_num, row in enumerate(
                     df.itertuples(index=False),
                     start=1):
