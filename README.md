@@ -8,9 +8,6 @@ from datetime import datetime
 import traceback
 import xlsxwriter
 
-# =====================================================
-# GLOBALS
-# =====================================================
 LOG_FILE = "Processing_Log.txt"
 HEADER_FILE = "Header_Diagnostics.xlsx"
 
@@ -28,13 +25,13 @@ file_store = {
 }
 
 # =====================================================
-# LOGGING
+# LOGGING (UTF-8 SAFE)
 # =====================================================
 def log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
     line = f"[{timestamp}] {msg}"
     print(line)
-    with open(LOG_FILE, "a") as f:
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
 # =====================================================
@@ -60,28 +57,47 @@ def detect_header(df):
     for i in range(0, min(60, len(df))):
         row = [norm(v) for v in df.iloc[i]]
 
-        has_year = any("year" in v for v in row)
-        has_entity = any("entity" in v for v in row)
-        has_currency = any(x in v for v in row for x in ["currency", "curr", "ccy"])
-
-        if has_year and has_entity and has_currency:
+        if (
+            any("year" in v for v in row)
+            and any("entity" in v for v in row)
+            and any(x in v for v in row for x in ["currency", "curr", "ccy"])
+        ):
             return i
 
     return None
 
 # =====================================================
-# HEADER DIAGNOSTICS EXPORT
+# MAIN PROCESS
 # =====================================================
-def export_header_diagnostics():
+def start_processing():
 
-    log("Starting header diagnostics export")
-    records = []
+    try:
 
-    for category, files in file_store.items():
+        open(LOG_FILE, "w", encoding="utf-8").close()
+        log("Processing started")
 
-        for file in files:
+        status_window = tk.Toplevel(root)
+        status_window.title("Processing Status")
+        status_window.geometry("500x150")
 
-            try:
+        status_label = tk.Label(status_window, text="")
+        status_label.pack(pady=20)
+
+        tables = {k: [] for k in file_store}
+        header_records = []
+
+        # =====================================================
+        # READ EACH FILE ONLY ONCE
+        # =====================================================
+        for category, files in file_store.items():
+
+            log(f"Loading category: {category}")
+            status_label.config(text=f"Loading {category}...")
+            status_label.update()
+
+            for file in files:
+
+                log(f"Reading file: {file}")
                 xls = pd.ExcelFile(file)
 
                 for sheet in xls.sheet_names:
@@ -96,175 +112,65 @@ def export_header_diagnostics():
                     header_row = detect_header(preview)
 
                     if header_row is None:
-                        records.append({
+                        log(f"Header not found → {file} | {sheet}")
+                        header_records.append({
                             "Category": category,
                             "File": os.path.basename(file),
                             "Sheet": sheet,
-                            "Header_Row": "NOT FOUND",
-                            "Status": "HEADER NOT DETECTED"
+                            "Header_Row": "NOT FOUND"
                         })
                         continue
 
                     df = pd.read_excel(
                         file,
                         sheet_name=sheet,
-                        header=header_row,
-                        nrows=1
+                        header=header_row
                     )
 
-                    records.append({
+                    df.columns = df.columns.str.strip().str.lower()
+
+                    df["Source_File"] = os.path.basename(file)
+                    df["Source_Sheet"] = sheet
+
+                    # ONE TIME PBT FIX
+                    if category == "PBT_Actuals":
+                        log("Applying PBT ÷1000 adjustment")
+                        numeric_cols = df.select_dtypes(include=["number"]).columns
+                        numeric_cols = [c for c in numeric_cols if c != "year"]
+                        df[numeric_cols] = df[numeric_cols] / 1000
+
+                    tables[category].append(df)
+
+                    header_records.append({
                         "Category": category,
                         "File": os.path.basename(file),
                         "Sheet": sheet,
-                        "Header_Row": header_row + 1,
-                        "Status": "OK"
+                        "Header_Row": header_row + 1
                     })
 
-            except Exception as e:
-                records.append({
-                    "Category": category,
-                    "File": os.path.basename(file),
-                    "Sheet": "ERROR",
-                    "Header_Row": "",
-                    "Status": str(e)
-                })
+        # =====================================================
+        # CREATE HEADER DIAGNOSTICS
+        # =====================================================
+        pd.DataFrame(header_records).to_excel(
+            HEADER_FILE,
+            index=False
+        )
+        log("Header diagnostics created")
 
-    pd.DataFrame(records).to_excel(HEADER_FILE, index=False)
-    log("Header diagnostics file created")
+        # =====================================================
+        # CONCAT EACH CATEGORY ONCE
+        # =====================================================
+        for key in tables:
+            if tables[key]:
+                tables[key] = pd.concat(tables[key], ignore_index=True)
+                log(f"{key} rows: {len(tables[key])}")
+            else:
+                tables[key] = pd.DataFrame()
+                log(f"{key} rows: 0")
 
-# =====================================================
-# LOAD CATEGORY
-# =====================================================
-def load_category(category, status_label):
-
-    log(f"Loading category: {category}")
-    status_label.config(text=f"Loading {category}...")
-    status_label.update()
-
-    all_dfs = []
-
-    for file in file_store[category]:
-
-        log(f"Reading file: {file}")
-        xls = pd.ExcelFile(file)
-
-        for sheet in xls.sheet_names:
-
-            preview = pd.read_excel(file, sheet_name=sheet,
-                                    header=None, nrows=60)
-
-            header_row = detect_header(preview)
-
-            if header_row is None:
-                log(f"Header not found → {file} | {sheet}")
-                continue
-
-            df = pd.read_excel(file,
-                               sheet_name=sheet,
-                               header=header_row)
-
-            df.columns = df.columns.str.strip().str.lower()
-
-            df["Source_File"] = os.path.basename(file)
-            df["Source_Sheet"] = sheet
-
-            # ONE TIME PBT FIX
-            if category == "PBT_Actuals":
-                log("Applying PBT ÷1000 adjustment")
-                numeric_cols = df.select_dtypes(include=["number"]).columns
-                numeric_cols = [c for c in numeric_cols if c != "year"]
-                df[numeric_cols] = df[numeric_cols] / 1000
-
-            all_dfs.append(df)
-
-    if all_dfs:
-        combined = pd.concat(all_dfs, ignore_index=True)
-        log(f"{category} loaded with {len(combined)} rows")
-        return combined
-
-    log(f"{category} loaded with 0 rows")
-    return pd.DataFrame()
-
-# =====================================================
-# WRITE EXCEL FAST
-# =====================================================
-def write_excel(output_name, con, status_label):
-
-    log("Starting Excel writing")
-    status_label.config(text="Writing Excel...")
-    status_label.update()
-
-    workbook = xlsxwriter.Workbook(
-        output_name,
-        {'constant_memory': True}
-    )
-
-    queries = {
-        "RWA Actuals":
-            "SELECT * FROM RWA_Actuals",
-        "RWA Plan":
-            "SELECT * FROM RWA_Plan",
-        "PBT_BS Actuals":
-            "SELECT * FROM PBT_Actuals UNION ALL SELECT * FROM BS_Actuals",
-        "PBT_BS Plan":
-            "SELECT * FROM PBT_Plan UNION ALL SELECT * FROM BS_Plan",
-        "AVBS_SD Actuals":
-            "SELECT * FROM AVBS_Actuals UNION ALL SELECT * FROM SD_Actuals",
-        "AVBS_SD Plan":
-            "SELECT * FROM AVBS_Plan UNION ALL SELECT * FROM SD_Plan"
-    }
-
-    for sheet, query in queries.items():
-
-        log(f"Executing query for {sheet}")
-        df = con.execute(query).df()
-        log(f"{sheet} → {len(df)} rows")
-
-        worksheet = workbook.add_worksheet(sheet[:31])
-
-        # Headers
-        for col_num, col_name in enumerate(df.columns):
-            worksheet.write(0, col_num, col_name)
-
-        # Rows
-        for row_num, row in enumerate(
-                df.itertuples(index=False),
-                start=1):
-            worksheet.write_row(row_num, 0, row)
-
-        log(f"{sheet} writing completed")
-
-    workbook.close()
-    log("Excel file completed")
-
-# =====================================================
-# MAIN PROCESS
-# =====================================================
-def start_processing():
-
-    try:
-
-        open(LOG_FILE, "w").close()
-        log("Processing started")
-
-        status_window = tk.Toplevel(root)
-        status_window.title("Processing Status")
-        status_window.geometry("500x150")
-
-        status_label = tk.Label(status_window, text="")
-        status_label.pack(pady=20)
-
-        export_header_diagnostics()
-
-        tables = {}
-
-        for key in file_store:
-            tables[key] = load_category(key, status_label)
-
-        log("All categories loaded")
-
-        # Align schema
-        log("Aligning schemas")
+        # =====================================================
+        # ALIGN SCHEMA ONCE
+        # =====================================================
         all_columns = set()
         for df in tables.values():
             if not df.empty:
@@ -283,7 +189,9 @@ def start_processing():
 
         log("Schema alignment completed")
 
-        # Register in DuckDB
+        # =====================================================
+        # REGISTER ONCE
+        # =====================================================
         con = duckdb.connect(database=":memory:")
         for name, df in tables.items():
             con.register(name, df)
@@ -295,9 +203,48 @@ def start_processing():
             f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         )
 
-        write_excel(output_name, con, status_label)
+        status_label.config(text="Writing Excel...")
+        status_label.update()
 
-        log("Processing completed successfully")
+        workbook = xlsxwriter.Workbook(
+            output_name,
+            {'constant_memory': True}
+        )
+
+        queries = {
+            "RWA Actuals":
+                "SELECT * FROM RWA_Actuals",
+            "RWA Plan":
+                "SELECT * FROM RWA_Plan",
+            "PBT_BS Actuals":
+                "SELECT * FROM PBT_Actuals UNION ALL SELECT * FROM BS_Actuals",
+            "PBT_BS Plan":
+                "SELECT * FROM PBT_Plan UNION ALL SELECT * FROM BS_Plan",
+            "AVBS_SD Actuals":
+                "SELECT * FROM AVBS_Actuals UNION ALL SELECT * FROM SD_Actuals",
+            "AVBS_SD Plan":
+                "SELECT * FROM AVBS_Plan UNION ALL SELECT * FROM SD_Plan"
+        }
+
+        for sheet, query in queries.items():
+
+            df = con.execute(query).df()
+            log(f"Writing {sheet} → {len(df)} rows")
+
+            worksheet = workbook.add_worksheet(sheet[:31])
+
+            for col_num, col_name in enumerate(df.columns):
+                worksheet.write(0, col_num, col_name)
+
+            for row_num, row in enumerate(
+                    df.itertuples(index=False),
+                    start=1):
+                worksheet.write_row(row_num, 0, row)
+
+        workbook.close()
+
+        log("Excel writing completed")
+        log("Processing finished successfully")
 
         messagebox.showinfo(
             "Success",
@@ -316,7 +263,7 @@ def start_processing():
 # GUI
 # =====================================================
 root = tk.Tk()
-root.title("Consolidation Tool (With Diagnostics & Logging)")
+root.title("Optimized Consolidation Tool")
 root.geometry("800x600")
 
 tk.Label(root,
