@@ -2,7 +2,6 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import pandas as pd
-import duckdb
 import os
 from datetime import datetime
 import traceback
@@ -25,7 +24,7 @@ file_store = {
 }
 
 # =====================================================
-# LOGGING (UTF-8 SAFE)
+# LOGGING
 # =====================================================
 def log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -67,6 +66,65 @@ def detect_header(df):
     return None
 
 # =====================================================
+# LOAD CATEGORY
+# =====================================================
+def load_category(category):
+
+    combined = []
+    header_records = []
+
+    for file in file_store[category]:
+
+        log(f"Reading file: {file}")
+        xls = pd.ExcelFile(file)
+
+        for sheet in xls.sheet_names:
+
+            preview = pd.read_excel(
+                file,
+                sheet_name=sheet,
+                header=None,
+                nrows=60
+            )
+
+            header_row = detect_header(preview)
+
+            if header_row is None:
+                log(f"Header not found → {file} | {sheet}")
+                continue
+
+            df = pd.read_excel(
+                file,
+                sheet_name=sheet,
+                header=header_row
+            )
+
+            df.columns = df.columns.str.strip().str.lower()
+
+            df["Source_File"] = os.path.basename(file)
+            df["Source_Sheet"] = sheet
+
+            # ONE TIME PBT FIX
+            if category == "PBT_Actuals":
+                numeric_cols = df.select_dtypes(include=["number"]).columns
+                numeric_cols = [c for c in numeric_cols if c != "year"]
+                df[numeric_cols] = df[numeric_cols] / 1000
+
+            combined.append(df)
+
+            header_records.append({
+                "Category": category,
+                "File": os.path.basename(file),
+                "Sheet": sheet,
+                "Header_Row": header_row + 1
+            })
+
+    if combined:
+        return pd.concat(combined, ignore_index=True), header_records
+
+    return pd.DataFrame(), header_records
+
+# =====================================================
 # MAIN PROCESS
 # =====================================================
 def start_processing():
@@ -77,181 +135,94 @@ def start_processing():
         log("Processing started")
 
         status_window = tk.Toplevel(root)
-        status_window.title("Processing Status")
+        status_window.title("Processing")
         status_window.geometry("400x120")
 
-        status_label = tk.Label(status_window, text="Starting...")
+        status_label = tk.Label(status_window, text="Loading...")
         status_label.pack(pady=20)
 
-        tables = {k: [] for k in file_store}
-        header_records = []
+        tables = {}
+        all_headers = []
 
-        # =====================================================
-        # READ EACH FILE ONLY ONCE
-        # =====================================================
-        for category, files in file_store.items():
-
-            log(f"Loading category: {category}")
-            status_label.config(text=f"Loading {category}...")
+        for key in file_store:
+            status_label.config(text=f"Loading {key}...")
             status_label.update()
 
-            for file in files:
+            df, headers = load_category(key)
+            tables[key] = df
+            all_headers.extend(headers)
 
-                log(f"Reading file: {file}")
-                xls = pd.ExcelFile(file)
+            log(f"{key} rows: {len(df)}")
 
-                for sheet in xls.sheet_names:
-
-                    preview = pd.read_excel(
-                        file,
-                        sheet_name=sheet,
-                        header=None,
-                        nrows=60
-                    )
-
-                    header_row = detect_header(preview)
-
-                    if header_row is None:
-                        log(f"Header not found → {file} | {sheet}")
-                        header_records.append({
-                            "Category": category,
-                            "File": os.path.basename(file),
-                            "Sheet": sheet,
-                            "Header_Row": "NOT FOUND"
-                        })
-                        continue
-
-                    df = pd.read_excel(
-                        file,
-                        sheet_name=sheet,
-                        header=header_row
-                    )
-
-                    df.columns = df.columns.str.strip().str.lower()
-
-                    df["Source_File"] = os.path.basename(file)
-                    df["Source_Sheet"] = sheet
-
-                    # =====================================================
-                    # ONE TIME PBT FIX (DELETE LATER)
-                    # =====================================================
-                    if category == "PBT_Actuals":
-                        log("Applying PBT ÷1000 adjustment")
-                        numeric_cols = df.select_dtypes(include=["number"]).columns
-                        numeric_cols = [c for c in numeric_cols if c != "year"]
-                        df[numeric_cols] = df[numeric_cols] / 1000
-                    # =====================================================
-
-                    tables[category].append(df)
-
-                    header_records.append({
-                        "Category": category,
-                        "File": os.path.basename(file),
-                        "Sheet": sheet,
-                        "Header_Row": header_row + 1
-                    })
-
-        # =====================================================
-        # SAVE HEADER DIAGNOSTICS
-        # =====================================================
-        pd.DataFrame(header_records).to_excel(
+        # Save header diagnostics
+        pd.DataFrame(all_headers).to_excel(
             HEADER_FILE,
             index=False
         )
-        log("Header diagnostics created")
+        log("Header diagnostics saved")
 
         # =====================================================
-        # CONCAT ONCE PER CATEGORY
+        # CREATE 3 FINAL COMPONENTS
         # =====================================================
-        for key in tables:
-            if tables[key]:
-                tables[key] = pd.concat(tables[key], ignore_index=True)
-                log(f"{key} rows: {len(tables[key])}")
-            else:
-                tables[key] = pd.DataFrame()
-                log(f"{key} rows: 0")
-
-        # =====================================================
-        # ALIGN SCHEMA
-        # =====================================================
-        all_columns = set()
-        for df in tables.values():
-            if not df.empty:
-                all_columns.update(df.columns)
-
-        all_columns = list(all_columns)
-
-        for key in tables:
-            if tables[key].empty:
-                tables[key] = pd.DataFrame(columns=all_columns)
-            else:
-                for col in all_columns:
-                    if col not in tables[key].columns:
-                        tables[key][col] = None
-                tables[key] = tables[key][all_columns]
-
-        log("Schema alignment completed")
-
-        # =====================================================
-        # REGISTER IN DUCKDB
-        # =====================================================
-        con = duckdb.connect(database=":memory:")
-        for name, df in tables.items():
-            con.register(name, df)
-
-        log("DuckDB registration completed")
-
-        output_name = (
-            f"Consolidated_Output_"
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        rwa_df = pd.concat(
+            [tables["RWA_Actuals"], tables["RWA_Plan"]],
+            ignore_index=True
         )
 
-        status_label.config(text="Writing Excel...")
-        status_label.update()
+        pbt_bs_df = pd.concat(
+            [
+                tables["PBT_Actuals"],
+                tables["PBT_Plan"],
+                tables["BS_Actuals"],
+                tables["BS_Plan"]
+            ],
+            ignore_index=True
+        )
+
+        avbs_sd_df = pd.concat(
+            [
+                tables["AVBS_Actuals"],
+                tables["AVBS_Plan"],
+                tables["SD_Actuals"],
+                tables["SD_Plan"]
+            ],
+            ignore_index=True
+        )
+
+        output_name = (
+            f"3_Component_Output_"
+            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        )
 
         workbook = xlsxwriter.Workbook(
             output_name,
             {'constant_memory': True}
         )
 
-        queries = {
-            "RWA Actuals":
-                "SELECT * FROM RWA_Actuals",
-            "RWA Plan":
-                "SELECT * FROM RWA_Plan",
-            "PBT_BS Actuals":
-                "SELECT * FROM PBT_Actuals UNION ALL SELECT * FROM BS_Actuals",
-            "PBT_BS Plan":
-                "SELECT * FROM PBT_Plan UNION ALL SELECT * FROM BS_Plan",
-            "AVBS_SD Actuals":
-                "SELECT * FROM AVBS_Actuals UNION ALL SELECT * FROM SD_Actuals",
-            "AVBS_SD Plan":
-                "SELECT * FROM AVBS_Plan UNION ALL SELECT * FROM SD_Plan"
+        final_sheets = {
+            "RWA": rwa_df,
+            "PBT_BS": pbt_bs_df,
+            "AVBS_SD": avbs_sd_df
         }
 
-        for sheet, query in queries.items():
+        for sheet, df in final_sheets.items():
 
-            df = con.execute(query).df()
             log(f"Writing {sheet} → {len(df)} rows")
 
-            # =====================================================
-            # SAFE CONVERSION FOR EXCEL
-            # =====================================================
-            df = df.copy()
+            # SAFE conversion
             df = df.astype(object)
             df = df.where(pd.notnull(df), None)
 
             for col in df.columns:
                 df[col] = df[col].apply(lambda x: "" if x is None else str(x))
-            # =====================================================
 
             worksheet = workbook.add_worksheet(sheet[:31])
 
-            # Write headers
+            # headers
             for col_num, col_name in enumerate(df.columns):
                 worksheet.write(0, col_num, col_name)
 
-            # Write rows
+            # rows
             for row_num, row in enumerate(
                     df.itertuples(index=False),
                     start=1):
@@ -259,8 +230,7 @@ def start_processing():
 
         workbook.close()
 
-        log("Excel writing completed")
-        log("Processing finished successfully")
+        log("Processing completed successfully")
 
         messagebox.showinfo(
             "Success",
@@ -279,7 +249,7 @@ def start_processing():
 # GUI
 # =====================================================
 root = tk.Tk()
-root.title("Optimized Consolidation Tool")
+root.title("3 Component Consolidation Tool")
 root.geometry("800x600")
 
 tk.Label(root,
