@@ -10,6 +10,9 @@ import xlsxwriter
 LOG_FILE = "Processing_Log.txt"
 HEADER_FILE = "Header_Diagnostics.xlsx"
 
+EXCEL_MAX_ROWS = 1048576  # Excel limit
+DATA_ROWS_PER_SHEET = EXCEL_MAX_ROWS - 1  # minus header row
+
 file_store = {
     "RWA_Actuals": [],
     "RWA_Plan": [],
@@ -32,18 +35,6 @@ def log(msg):
     print(line)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
-
-# =====================================================
-# FILE SELECTOR
-# =====================================================
-def select_files(key):
-    files = filedialog.askopenfilenames(
-        filetypes=[("Excel files", "*.xlsx *.xls")]
-    )
-    if files:
-        file_store[key] = list(files)
-        labels[key].config(text=f"{len(files)} files selected")
-        log(f"{key}: {len(files)} files selected")
 
 # =====================================================
 # HEADER DETECTION
@@ -80,12 +71,8 @@ def load_category(category):
 
         for sheet in xls.sheet_names:
 
-            preview = pd.read_excel(
-                file,
-                sheet_name=sheet,
-                header=None,
-                nrows=60
-            )
+            preview = pd.read_excel(file, sheet_name=sheet,
+                                    header=None, nrows=60)
 
             header_row = detect_header(preview)
 
@@ -93,14 +80,11 @@ def load_category(category):
                 log(f"Header not found → {file} | {sheet}")
                 continue
 
-            df = pd.read_excel(
-                file,
-                sheet_name=sheet,
-                header=header_row
-            )
+            df = pd.read_excel(file,
+                               sheet_name=sheet,
+                               header=header_row)
 
             df.columns = df.columns.str.strip().str.lower()
-
             df["Source_File"] = os.path.basename(file)
             df["Source_Sheet"] = sheet
 
@@ -125,6 +109,66 @@ def load_category(category):
     return pd.DataFrame(), header_records
 
 # =====================================================
+# WRITE WITH AUTO SPLIT
+# =====================================================
+def write_excel_file(file_name, sheet_dict):
+
+    workbook = xlsxwriter.Workbook(
+        file_name,
+        {'constant_memory': True}
+    )
+
+    for base_sheet_name, df in sheet_dict.items():
+
+        log(f"Preparing {base_sheet_name} ({len(df)} rows)")
+
+        # Safe conversion
+        df = df.astype(object)
+        df = df.where(pd.notnull(df), None)
+        for col in df.columns:
+            df[col] = df[col].apply(lambda x: "" if x is None else str(x))
+
+        total_rows = len(df)
+
+        if total_rows == 0:
+            worksheet = workbook.add_worksheet(base_sheet_name[:31])
+            continue
+
+        num_splits = (total_rows // DATA_ROWS_PER_SHEET) + 1
+
+        for split_index in range(num_splits):
+
+            start = split_index * DATA_ROWS_PER_SHEET
+            end = min(start + DATA_ROWS_PER_SHEET, total_rows)
+
+            if start >= total_rows:
+                break
+
+            if split_index == 0:
+                sheet_name = base_sheet_name
+            else:
+                sheet_name = f"{base_sheet_name}_{split_index+1}"
+
+            log(f"Writing {sheet_name} rows {start} to {end}")
+
+            worksheet = workbook.add_worksheet(sheet_name[:31])
+
+            # Write headers
+            for col_num, col_name in enumerate(df.columns):
+                worksheet.write(0, col_num, col_name)
+
+            # Write rows
+            chunk = df.iloc[start:end]
+
+            for row_num, row in enumerate(
+                    chunk.itertuples(index=False),
+                    start=1):
+                worksheet.write_row(row_num, 0, list(row))
+
+    workbook.close()
+    log(f"{file_name} completed")
+
+# =====================================================
 # MAIN PROCESS
 # =====================================================
 def start_processing():
@@ -134,107 +178,67 @@ def start_processing():
         open(LOG_FILE, "w", encoding="utf-8").close()
         log("Processing started")
 
-        status_window = tk.Toplevel(root)
-        status_window.title("Processing")
-        status_window.geometry("400x120")
-
-        status_label = tk.Label(status_window, text="Loading...")
-        status_label.pack(pady=20)
-
         tables = {}
         all_headers = []
 
         for key in file_store:
-            status_label.config(text=f"Loading {key}...")
-            status_label.update()
-
             df, headers = load_category(key)
             tables[key] = df
             all_headers.extend(headers)
-
             log(f"{key} rows: {len(df)}")
 
-        # Save header diagnostics
         pd.DataFrame(all_headers).to_excel(
             HEADER_FILE,
             index=False
         )
         log("Header diagnostics saved")
 
-        # =====================================================
-        # CREATE 3 FINAL COMPONENTS
-        # =====================================================
-        rwa_df = pd.concat(
-            [tables["RWA_Actuals"], tables["RWA_Plan"]],
-            ignore_index=True
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # RWA
+        write_excel_file(
+            f"RWA_Output_{timestamp}.xlsx",
+            {
+                "RWA Actuals": tables["RWA_Actuals"],
+                "RWA Plan": tables["RWA_Plan"]
+            }
         )
 
-        pbt_bs_df = pd.concat(
-            [
-                tables["PBT_Actuals"],
-                tables["PBT_Plan"],
-                tables["BS_Actuals"],
-                tables["BS_Plan"]
-            ],
-            ignore_index=True
+        # AVBS_SD
+        write_excel_file(
+            f"AVBS_SD_Output_{timestamp}.xlsx",
+            {
+                "AVBS_SD Actuals":
+                    pd.concat([tables["AVBS_Actuals"],
+                               tables["SD_Actuals"]],
+                              ignore_index=True),
+                "AVBS_SD Plan":
+                    pd.concat([tables["AVBS_Plan"],
+                               tables["SD_Plan"]],
+                              ignore_index=True)
+            }
         )
 
-        avbs_sd_df = pd.concat(
-            [
-                tables["AVBS_Actuals"],
-                tables["AVBS_Plan"],
-                tables["SD_Actuals"],
-                tables["SD_Plan"]
-            ],
-            ignore_index=True
+        # PBT_BS
+        write_excel_file(
+            f"PBT_BS_Output_{timestamp}.xlsx",
+            {
+                "PBT_BS Actuals":
+                    pd.concat([tables["PBT_Actuals"],
+                               tables["BS_Actuals"]],
+                              ignore_index=True),
+                "PBT_BS Plan":
+                    pd.concat([tables["PBT_Plan"],
+                               tables["BS_Plan"]],
+                              ignore_index=True)
+            }
         )
-
-        output_name = (
-            f"3_Component_Output_"
-            f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-        )
-
-        workbook = xlsxwriter.Workbook(
-            output_name,
-            {'constant_memory': True}
-        )
-
-        final_sheets = {
-            "RWA": rwa_df,
-            "PBT_BS": pbt_bs_df,
-            "AVBS_SD": avbs_sd_df
-        }
-
-        for sheet, df in final_sheets.items():
-
-            log(f"Writing {sheet} → {len(df)} rows")
-
-            # SAFE conversion
-            df = df.astype(object)
-            df = df.where(pd.notnull(df), None)
-
-            for col in df.columns:
-                df[col] = df[col].apply(lambda x: "" if x is None else str(x))
-
-            worksheet = workbook.add_worksheet(sheet[:31])
-
-            # headers
-            for col_num, col_name in enumerate(df.columns):
-                worksheet.write(0, col_num, col_name)
-
-            # rows
-            for row_num, row in enumerate(
-                    df.itertuples(index=False),
-                    start=1):
-                worksheet.write_row(row_num, 0, list(row))
-
-        workbook.close()
 
         log("Processing completed successfully")
 
         messagebox.showinfo(
             "Success",
-            f"Completed.\n\nCreated:\n{output_name}\n{HEADER_FILE}\n{LOG_FILE}"
+            "Completed.\n\n3 files created with auto sheet splitting."
         )
 
     except Exception:
@@ -249,7 +253,7 @@ def start_processing():
 # GUI
 # =====================================================
 root = tk.Tk()
-root.title("3 Component Consolidation Tool")
+root.title("3 File Consolidation Tool")
 root.geometry("800x600")
 
 tk.Label(root,
@@ -260,6 +264,15 @@ frame = tk.Frame(root)
 frame.pack()
 
 labels = {}
+
+def select_files(key):
+    files = filedialog.askopenfilenames(
+        filetypes=[("Excel files", "*.xlsx *.xls")]
+    )
+    if files:
+        file_store[key] = list(files)
+        labels[key].config(text=f"{len(files)} files selected")
+        log(f"{key}: {len(files)} files selected")
 
 for i, key in enumerate(file_store.keys()):
     tk.Label(frame, text=key,
