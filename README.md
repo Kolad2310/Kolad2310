@@ -78,9 +78,9 @@ def start_processing():
 
         status_window = tk.Toplevel(root)
         status_window.title("Processing Status")
-        status_window.geometry("500x150")
+        status_window.geometry("400x120")
 
-        status_label = tk.Label(status_window, text="")
+        status_label = tk.Label(status_window, text="Starting...")
         status_label.pack(pady=20)
 
         tables = {k: [] for k in file_store}
@@ -132,12 +132,15 @@ def start_processing():
                     df["Source_File"] = os.path.basename(file)
                     df["Source_Sheet"] = sheet
 
-                    # ONE TIME PBT FIX
+                    # =====================================================
+                    # ONE TIME PBT FIX (DELETE LATER)
+                    # =====================================================
                     if category == "PBT_Actuals":
                         log("Applying PBT ÷1000 adjustment")
                         numeric_cols = df.select_dtypes(include=["number"]).columns
                         numeric_cols = [c for c in numeric_cols if c != "year"]
                         df[numeric_cols] = df[numeric_cols] / 1000
+                    # =====================================================
 
                     tables[category].append(df)
 
@@ -149,7 +152,7 @@ def start_processing():
                     })
 
         # =====================================================
-        # CREATE HEADER DIAGNOSTICS
+        # SAVE HEADER DIAGNOSTICS
         # =====================================================
         pd.DataFrame(header_records).to_excel(
             HEADER_FILE,
@@ -158,7 +161,7 @@ def start_processing():
         log("Header diagnostics created")
 
         # =====================================================
-        # CONCAT EACH CATEGORY ONCE
+        # CONCAT ONCE PER CATEGORY
         # =====================================================
         for key in tables:
             if tables[key]:
@@ -169,7 +172,7 @@ def start_processing():
                 log(f"{key} rows: 0")
 
         # =====================================================
-        # ALIGN SCHEMA ONCE
+        # ALIGN SCHEMA
         # =====================================================
         all_columns = set()
         for df in tables.values():
@@ -231,15 +234,25 @@ def start_processing():
             df = con.execute(query).df()
             log(f"Writing {sheet} → {len(df)} rows")
 
+            # ================= SAFE CONVERSION =================
+            df = df.copy()
+            df = df.fillna("")
+
+            for col in df.columns:
+                df[col] = df[col].astype(str)
+            # ===================================================
+
             worksheet = workbook.add_worksheet(sheet[:31])
 
+            # Headers
             for col_num, col_name in enumerate(df.columns):
                 worksheet.write(0, col_num, col_name)
 
+            # Rows
             for row_num, row in enumerate(
                     df.itertuples(index=False),
                     start=1):
-                worksheet.write_row(row_num, 0, row)
+                worksheet.write_row(row_num, 0, list(row))
 
         workbook.close()
 
