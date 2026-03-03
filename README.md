@@ -6,10 +6,13 @@ import duckdb
 import os
 from datetime import datetime
 import traceback
+import xlsxwriter
 
 # =====================================================
-# FILE STORAGE
+# GLOBALS
 # =====================================================
+LOG_FILE = "Processing_Log.txt"
+
 file_store = {
     "RWA_Actuals": [],
     "RWA_Plan": [],
@@ -24,6 +27,17 @@ file_store = {
 }
 
 # =====================================================
+# LOG FUNCTION
+# =====================================================
+def log(message):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    full_msg = f"[{timestamp}] {message}"
+    print(full_msg)
+
+    with open(LOG_FILE, "a") as f:
+        f.write(full_msg + "\n")
+
+# =====================================================
 # FILE SELECTOR
 # =====================================================
 def select_files(key):
@@ -33,9 +47,10 @@ def select_files(key):
     if files:
         file_store[key] = list(files)
         labels[key].config(text=f"{len(files)} files selected")
+        log(f"{key}: {len(files)} files selected")
 
 # =====================================================
-# HEADER DETECTION (ROBUST BUT SIMPLE)
+# HEADER DETECTION
 # =====================================================
 def detect_header(df):
 
@@ -55,118 +70,121 @@ def detect_header(df):
     return None
 
 # =====================================================
-# HEADER DIAGNOSTICS (ALWAYS RUN FIRST)
-# =====================================================
-def export_header_diagnostics():
-
-    records = []
-
-    for category, files in file_store.items():
-
-        for file in files:
-
-            try:
-                xls = pd.ExcelFile(file)
-
-                for sheet in xls.sheet_names:
-
-                    preview = pd.read_excel(
-                        file,
-                        sheet_name=sheet,
-                        header=None,
-                        nrows=60
-                    )
-
-                    header_row = detect_header(preview)
-
-                    if header_row is None:
-                        records.append({
-                            "Category": category,
-                            "File": os.path.basename(file),
-                            "Sheet": sheet,
-                            "Header_Row": "NOT FOUND",
-                            "Columns": "",
-                            "Status": "HEADER NOT DETECTED"
-                        })
-                        continue
-
-                    df = pd.read_excel(
-                        file,
-                        sheet_name=sheet,
-                        header=header_row,
-                        nrows=1
-                    )
-
-                    records.append({
-                        "Category": category,
-                        "File": os.path.basename(file),
-                        "Sheet": sheet,
-                        "Header_Row": header_row + 1,
-                        "Columns": " | ".join(df.columns.astype(str)),
-                        "Status": "OK"
-                    })
-
-            except Exception as e:
-                records.append({
-                    "Category": category,
-                    "File": os.path.basename(file),
-                    "Sheet": "ERROR",
-                    "Header_Row": "",
-                    "Columns": "",
-                    "Status": str(e)
-                })
-
-    df_diag = pd.DataFrame(records)
-    df_diag.to_excel("Header_Diagnostics.xlsx", index=False)
-    print("Header_Diagnostics.xlsx created")
-
-# =====================================================
 # LOAD CATEGORY
 # =====================================================
-def load_category(category):
+def load_category(category, status_label):
+
+    log(f"Starting load for {category}")
+    status_label.config(text=f"Loading {category}...")
+    status_label.update()
 
     all_dfs = []
 
     for file in file_store[category]:
 
-        print("Processing:", category, file)
-
+        log(f"Reading file: {file}")
         xls = pd.ExcelFile(file)
 
         for sheet in xls.sheet_names:
 
-            preview = pd.read_excel(file, sheet_name=sheet,
-                                    header=None, nrows=60)
+            log(f"Checking sheet: {sheet}")
+            preview = pd.read_excel(
+                file,
+                sheet_name=sheet,
+                header=None,
+                nrows=60
+            )
 
             header_row = detect_header(preview)
 
             if header_row is None:
-                print("Header NOT found:", file, sheet)
+                log(f"Header NOT found in {file} | {sheet}")
                 continue
 
-            df = pd.read_excel(file,
-                               sheet_name=sheet,
-                               header=header_row)
+            log(f"Header detected at row {header_row+1}")
+
+            df = pd.read_excel(
+                file,
+                sheet_name=sheet,
+                header=header_row
+            )
 
             df.columns = df.columns.str.strip().str.lower()
 
             df["Source_File"] = os.path.basename(file)
             df["Source_Sheet"] = sheet
 
-            # ONE TIME PBT FIX
+            # ==========================================
+            # ONE TIME PBT FIX (DELETE LATER)
+            # ==========================================
             if category == "PBT_Actuals":
-                numeric_cols = df.select_dtypes(
-                    include=["number"]
-                ).columns
+                log("Applying PBT ÷1000 adjustment")
+                numeric_cols = df.select_dtypes(include=["number"]).columns
                 numeric_cols = [c for c in numeric_cols if c != "year"]
                 df[numeric_cols] = df[numeric_cols] / 1000
+            # ==========================================
 
             all_dfs.append(df)
 
     if all_dfs:
-        return pd.concat(all_dfs, ignore_index=True)
+        combined = pd.concat(all_dfs, ignore_index=True)
+        log(f"{category} loaded: {len(combined)} rows")
+        return combined
 
+    log(f"{category} loaded: 0 rows")
     return pd.DataFrame()
+
+# =====================================================
+# WRITE EXCEL (STREAMING)
+# =====================================================
+def write_excel_streaming(output_name, con, status_label):
+
+    log("Starting Excel writing phase")
+    status_label.config(text="Writing Excel file...")
+    status_label.update()
+
+    workbook = xlsxwriter.Workbook(
+        output_name,
+        {'constant_memory': True}
+    )
+
+    queries = {
+        "RWA Actuals":
+            "SELECT * FROM RWA_Actuals",
+        "RWA Plan":
+            "SELECT * FROM RWA_Plan",
+        "PBT_BS Actuals":
+            "SELECT * FROM PBT_Actuals UNION ALL SELECT * FROM BS_Actuals",
+        "PBT_BS Plan":
+            "SELECT * FROM PBT_Plan UNION ALL SELECT * FROM BS_Plan",
+        "AVBS_SD Actuals":
+            "SELECT * FROM AVBS_Actuals UNION ALL SELECT * FROM SD_Actuals",
+        "AVBS_SD Plan":
+            "SELECT * FROM AVBS_Plan UNION ALL SELECT * FROM SD_Plan"
+    }
+
+    for sheet, query in queries.items():
+
+        log(f"Executing query for {sheet}")
+        df = con.execute(query).df()
+        log(f"{sheet}: {len(df)} rows to write")
+
+        worksheet = workbook.add_worksheet(sheet[:31])
+
+        # Write headers
+        for col_num, col_name in enumerate(df.columns):
+            worksheet.write(0, col_num, col_name)
+
+        # Write rows
+        for row_num, row in enumerate(
+                df.itertuples(index=False),
+                start=1):
+            worksheet.write_row(row_num, 0, row)
+
+        log(f"{sheet} writing completed")
+
+    workbook.close()
+    log("Excel file writing completed")
 
 # =====================================================
 # MAIN PROCESS
@@ -175,33 +193,26 @@ def start_processing():
 
     try:
 
-        export_header_diagnostics()
+        # Clear old log
+        open(LOG_FILE, "w").close()
+        log("Processing started")
+
+        progress_window = tk.Toplevel(root)
+        progress_window.title("Processing")
+        progress_window.geometry("600x150")
+
+        status_label = tk.Label(progress_window, text="")
+        status_label.pack(pady=20)
 
         tables = {}
 
         for key in file_store:
-            tables[key] = load_category(key)
+            tables[key] = load_category(key, status_label)
 
-        # Save load summary
-        summary = []
-        for key, df in tables.items():
-            summary.append({
-                "Category": key,
-                "Rows_Loaded": len(df)
-            })
-
-        pd.DataFrame(summary).to_excel(
-            "Load_Summary.xlsx",
-            index=False
-        )
-
-        print("Load_Summary.xlsx created")
-
-        # Print row counts
-        for key in tables:
-            print(key, "rows:", len(tables[key]))
+        log("All categories loaded")
 
         # Align schema
+        log("Aligning schemas")
         all_columns = set()
         for df in tables.values():
             if not df.empty:
@@ -218,60 +229,45 @@ def start_processing():
                         tables[key][col] = None
                 tables[key] = tables[key][all_columns]
 
-        con = duckdb.connect(database=":memory:")
+        log("Schema alignment completed")
 
+        # Register in DuckDB
+        log("Registering tables in DuckDB")
+        con = duckdb.connect(database=":memory:")
         for name, df in tables.items():
             con.register(name, df)
+
+        log("DuckDB registration completed")
 
         output_name = (
             f"Final_Output_"
             f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         )
 
-        with pd.ExcelWriter(output_name,
-                            engine="openpyxl") as writer:
+        write_excel_streaming(output_name, con, status_label)
 
-            queries = {
-                "RWA Actuals":
-                    "SELECT * FROM RWA_Actuals",
-                "RWA Plan":
-                    "SELECT * FROM RWA_Plan",
-                "PBT_BS Actuals":
-                    "SELECT * FROM PBT_Actuals UNION ALL SELECT * FROM BS_Actuals",
-                "PBT_BS Plan":
-                    "SELECT * FROM PBT_Plan UNION ALL SELECT * FROM BS_Plan",
-                "AVBS_SD Actuals":
-                    "SELECT * FROM AVBS_Actuals UNION ALL SELECT * FROM SD_Actuals",
-                "AVBS_SD Plan":
-                    "SELECT * FROM AVBS_Plan UNION ALL SELECT * FROM SD_Plan"
-            }
-
-            for sheet, query in queries.items():
-                df = con.execute(query).df()
-                df.to_excel(writer,
-                            sheet_name=sheet,
-                            index=False)
+        log(f"File created: {output_name}")
 
         messagebox.showinfo(
             "Success",
-            f"Completed.\nCreated:\nHeader_Diagnostics.xlsx\nLoad_Summary.xlsx\n{output_name}"
+            f"Completed.\n\nCreated:\n{output_name}\n\nSee Processing_Log.txt for steps."
         )
 
     except Exception as e:
 
-        with open("Error_Log.txt", "w") as f:
-            f.write(traceback.format_exc())
+        log("ERROR OCCURRED")
+        log(traceback.format_exc())
 
         messagebox.showerror(
             "Error",
-            "Processing failed.\nCheck Error_Log.txt"
+            "Processing failed.\nCheck Processing_Log.txt"
         )
 
 # =====================================================
 # GUI
 # =====================================================
 root = tk.Tk()
-root.title("Diagnostic Consolidation Tool")
+root.title("0.5GB Optimized Consolidation Tool")
 root.geometry("800x600")
 
 tk.Label(root,
@@ -300,6 +296,7 @@ tk.Button(root,
           text="Submit & Process",
           command=start_processing,
           bg="green",
-          fg="white").pack(pady=20)
+          fg="white",
+          font=("Arial", 12, "bold")).pack(pady=20)
 
 root.mainloop()
