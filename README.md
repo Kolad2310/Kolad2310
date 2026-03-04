@@ -5,7 +5,7 @@ import pandas as pd
 import os
 from datetime import datetime
 import traceback
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 LOG_FILE = "Processing_Log.txt"
 HEADER_FILE = "Header_Diagnostics.xlsx"
@@ -13,19 +13,14 @@ HEADER_FILE = "Header_Diagnostics.xlsx"
 EXCEL_MAX_ROWS = 1048576
 DATA_ROWS_PER_SHEET = EXCEL_MAX_ROWS - 1
 
-# ------------------------------------------------
-# FILTER LISTS (EDIT THESE)
-# ------------------------------------------------
+# ----------------------------
+# EDIT FILTER LISTS
+# ----------------------------
 
-entity_list = [
-    "Entity1","Entity2","Entity3"
-]
+entity_list = ["Entity1","Entity2"]
+globalbusiness_list = ["Business1","Business2"]
 
-globalbusiness_list = [
-    "Business1","Business2","Business3"
-]
-
-# ------------------------------------------------
+# ----------------------------
 
 file_store = {
     "RWA_Actuals": [],
@@ -40,8 +35,11 @@ file_store = {
     "BS_Plan": []
 }
 
+mapper_file = None
+
+
 # ------------------------------------------------
-# Logging
+# LOGGING
 # ------------------------------------------------
 
 def log(msg):
@@ -51,8 +49,9 @@ def log(msg):
     with open(LOG_FILE,"a",encoding="utf-8") as f:
         f.write(line+"\n")
 
+
 # ------------------------------------------------
-# Header Detection
+# HEADER DETECTION
 # ------------------------------------------------
 
 def detect_header(df):
@@ -70,8 +69,9 @@ def detect_header(df):
 
     return None
 
+
 # ------------------------------------------------
-# Normalize text
+# NORMALIZE TEXT
 # ------------------------------------------------
 
 def normalize_series(s):
@@ -83,19 +83,9 @@ def normalize_series(s):
         .str.upper()
     )
 
-# ------------------------------------------------
-# Proper case headers
-# ------------------------------------------------
-
-def proper_case(cols):
-
-    return [
-        str(c).replace("_"," ").title()
-        for c in cols
-    ]
 
 # ------------------------------------------------
-# Consolidate Category
+# CONSOLIDATE CATEGORY
 # ------------------------------------------------
 
 def consolidate_category(category):
@@ -122,7 +112,6 @@ def consolidate_category(category):
             header_row = detect_header(preview)
 
             if header_row is None:
-                log(f"Header not found {file} | {sheet}")
                 continue
 
             df = pd.read_excel(
@@ -133,13 +122,11 @@ def consolidate_category(category):
             )
 
             df.columns = df.columns.str.strip().str.lower()
+
             df = df.dropna(how="all")
 
             for col in df.columns:
                 df[col] = pd.to_numeric(df[col],errors="ignore")
-
-            df["source_file"] = os.path.basename(file)
-            df["source_sheet"] = sheet
 
             collected.append(df)
 
@@ -151,18 +138,12 @@ def consolidate_category(category):
                 "Columns":",".join(df.columns)
             })
 
-            log(f"{category} {sheet} rows {len(df)}")
-
     if not collected:
         return pd.DataFrame(), header_info
 
     df = pd.concat(collected,ignore_index=True)
 
     log(f"{category} rows before filter {len(df)}")
-
-    # ------------------------------------------------
-    # Normalize columns
-    # ------------------------------------------------
 
     if "currency" in df.columns:
         df["currency"] = normalize_series(df["currency"])
@@ -173,12 +154,8 @@ def consolidate_category(category):
     if "global business" in df.columns:
         df["global business"] = normalize_series(df["global business"])
 
-    entity_clean = [e.strip().upper() for e in entity_list]
-    gb_clean = [g.strip().upper() for g in globalbusiness_list]
-
-    # ------------------------------------------------
-    # Filtering
-    # ------------------------------------------------
+    entity_clean = [e.upper() for e in entity_list]
+    gb_clean = [g.upper() for g in globalbusiness_list]
 
     if "currency" in df.columns:
         df = df[df["currency"]=="USD"]
@@ -191,13 +168,11 @@ def consolidate_category(category):
 
     log(f"{category} rows after filter {len(df)}")
 
-    # ------------------------------------------------
     # PBT logic
-    # ------------------------------------------------
-
     if category=="PBT_Actuals" and "year" in df.columns:
 
         year_index = df.columns.get_loc("year")
+
         numeric_cols = df.columns[year_index+1:]
 
         for col in numeric_cols:
@@ -206,146 +181,155 @@ def consolidate_category(category):
 
     return df, header_info
 
+
 # ------------------------------------------------
-# Excel Writer (openpyxl write-only mode)
+# WRITE OUTPUT FILE
 # ------------------------------------------------
 
-def write_excel(file_name, sheet_dict):
+def write_output_file(file_name, sheet_dict):
 
     wb = Workbook(write_only=True)
 
-    for base_sheet, df in sheet_dict.items():
+    for sheet, df in sheet_dict.items():
+
+        ws = wb.create_sheet(sheet)
 
         if df.empty:
-            ws = wb.create_sheet(base_sheet)
             continue
 
-        headers = proper_case(df.columns)
+        ws.append(df.columns.str.title().tolist())
 
-        total_rows = len(df)
-        splits = (total_rows // DATA_ROWS_PER_SHEET) + 1
+        for row in df.itertuples(index=False):
 
-        for split in range(splits):
+            clean_row = [
+                None if pd.isna(v) else v
+                for v in row
+            ]
 
-            start = split * DATA_ROWS_PER_SHEET
-            end = min(start + DATA_ROWS_PER_SHEET,total_rows)
-
-            if start >= total_rows:
-                break
-
-            sheet_name = base_sheet if split==0 else f"{base_sheet}_{split+1}"
-
-            ws = wb.create_sheet(sheet_name[:31])
-
-            ws.append(headers)
-
-            chunk = df.iloc[start:end]
-
-            for row in chunk.itertuples(index=False):
-
-                clean_row = [
-                    None if pd.isna(v) or v in [float("inf"),float("-inf")] else v
-                    for v in row
-                ]
-
-                ws.append(clean_row)
+            ws.append(clean_row)
 
     wb.save(file_name)
 
     log(f"{file_name} written")
 
+
 # ------------------------------------------------
-# Main Process
+# CREATE MAPPED COPY
+# ------------------------------------------------
+
+def create_mapped_copy(original_file):
+
+    log("Creating mapped copy")
+
+    entity_map = pd.read_excel(mapper_file,sheet_name="Entity")
+    product_map = pd.read_excel(mapper_file,sheet_name="Product")
+
+    entity_dict = dict(zip(
+        entity_map["Entity"],
+        entity_map["Proxy Entity Code"]
+    ))
+
+    product_dict = dict(zip(
+        product_map["Product"],
+        product_map["Proxy Product Code"]
+    ))
+
+    wb = load_workbook(original_file)
+
+    for sheet in wb.sheetnames:
+
+        ws = wb[sheet]
+
+        headers = [cell.value for cell in ws[1]]
+
+        if "Function" in headers:
+
+            col_index = headers.index("Function")+1
+
+            ws.delete_cols(col_index)
+
+            headers.pop(col_index-1)
+
+        if "Entity" in headers:
+
+            e_idx = headers.index("Entity")+1
+
+            for r in range(2,ws.max_row+1):
+
+                val = ws.cell(r,e_idx).value
+
+                if val in entity_dict:
+
+                    ws.cell(r,e_idx).value = entity_dict[val]
+
+        if "Product" in headers:
+
+            p_idx = headers.index("Product")+1
+
+            for r in range(2,ws.max_row+1):
+
+                val = ws.cell(r,p_idx).value
+
+                if val in product_dict:
+
+                    ws.cell(r,p_idx).value = product_dict[val]
+
+    new_file = original_file.replace(".xlsx","_Mapped.xlsx")
+
+    wb.save(new_file)
+
+    log(f"{new_file} created")
+
+
+# ------------------------------------------------
+# MAIN PROCESS
 # ------------------------------------------------
 
 def start_processing():
 
     try:
 
-        open(LOG_FILE,"w",encoding="utf-8").close()
+        open(LOG_FILE,"w").close()
 
-        log("Processing started")
-
-        tables = {}
-        headers = []
+        tables={}
+        headers=[]
 
         for key in file_store:
 
             df,h = consolidate_category(key)
 
             tables[key]=df
+
             headers.extend(h)
 
         pd.DataFrame(headers).to_excel(HEADER_FILE,index=False)
 
-        log("Header diagnostics written")
-
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        # RWA
+        output_file = f"Consolidated_Output_{ts}.xlsx"
 
-        write_excel(
-            f"RWA_Output_{ts}.xlsx",
+        write_output_file(
+            output_file,
             {
                 "RWA Actuals":tables["RWA_Actuals"],
-                "RWA Plan":tables["RWA_Plan"]
+                "RWA Plan":tables["RWA_Plan"],
+                "AVBS_SD Actuals":pd.concat([tables["AVBS_Actuals"],tables["SD_Actuals"]]),
+                "AVBS_SD Plan":pd.concat([tables["AVBS_Plan"],tables["SD_Plan"]]),
+                "PBT_BS Actuals":pd.concat([tables["PBT_Actuals"],tables["BS_Actuals"]]),
+                "PBT_BS Plan":pd.concat([tables["PBT_Plan"],tables["BS_Plan"]])
             }
         )
 
-        # AVBS_SD
+        create_mapped_copy(output_file)
 
-        write_excel(
-            f"AVBS_SD_Output_{ts}.xlsx",
-            {
-                "AVBS_SD Actuals":
-                    pd.concat(
-                        [tables["AVBS_Actuals"],tables["SD_Actuals"]],
-                        ignore_index=True
-                    ),
-
-                "AVBS_SD Plan":
-                    pd.concat(
-                        [tables["AVBS_Plan"],tables["SD_Plan"]],
-                        ignore_index=True
-                    )
-            }
-        )
-
-        # PBT_BS
-
-        write_excel(
-            f"PBT_BS_Output_{ts}.xlsx",
-            {
-                "PBT_BS Actuals":
-                    pd.concat(
-                        [tables["PBT_Actuals"],tables["BS_Actuals"]],
-                        ignore_index=True
-                    ),
-
-                "PBT_BS Plan":
-                    pd.concat(
-                        [tables["PBT_Plan"],tables["BS_Plan"]],
-                        ignore_index=True
-                    )
-            }
-        )
-
-        log("Processing completed")
-
-        messagebox.showinfo(
-            "Success",
-            "Processing completed successfully"
-        )
+        messagebox.showinfo("Success","Processing complete")
 
     except Exception:
 
-        log("ERROR OCCURRED")
         log(traceback.format_exc())
 
-        messagebox.showerror(
-            "Error",
-            "Processing failed. Check Processing_Log.txt"
-        )
+        messagebox.showerror("Error","Processing failed")
+
 
 # ------------------------------------------------
 # GUI
@@ -355,50 +339,43 @@ root = tk.Tk()
 root.title("Financial Consolidation Tool")
 root.geometry("800x600")
 
-tk.Label(
-    root,
-    text="Select Files",
-    font=("Arial",14,"bold")
-).pack(pady=15)
-
-frame = tk.Frame(root)
-frame.pack()
+frame=tk.Frame(root)
+frame.pack(pady=20)
 
 labels={}
 
-def select_files_gui(key):
+def select_files(key):
 
-    files = filedialog.askopenfilenames(
-        filetypes=[("Excel files","*.xlsx *.xls")]
-    )
+    files=filedialog.askopenfilenames(filetypes=[("Excel","*.xlsx *.xls")])
 
     if files:
         file_store[key]=list(files)
-        labels[key].config(text=f"{len(files)} files selected")
-        log(f"{key} files selected")
+        labels[key].config(text=f"{len(files)} selected")
+
+
+def select_mapper():
+
+    global mapper_file
+
+    mapper_file=filedialog.askopenfilename(filetypes=[("Excel","*.xlsx")])
 
 for i,key in enumerate(file_store):
 
-    tk.Label(frame,text=key,width=22).grid(row=i,column=0)
+    tk.Label(frame,text=key,width=20).grid(row=i,column=0)
 
-    tk.Button(
-        frame,
-        text="Select Files",
-        command=lambda k=key:select_files_gui(k)
-    ).grid(row=i,column=1)
+    tk.Button(frame,text="Select Files",
+              command=lambda k=key:select_files(k)).grid(row=i,column=1)
 
-    lbl=tk.Label(frame,text="No files selected",width=25)
+    lbl=tk.Label(frame,text="None")
     lbl.grid(row=i,column=2)
 
     labels[key]=lbl
 
-tk.Button(
-    root,
-    text="Submit & Process",
-    command=start_processing,
-    bg="green",
-    fg="white",
-    font=("Arial",12,"bold")
-).pack(pady=20)
+tk.Button(root,text="Select Mapper File",
+          command=select_mapper).pack(pady=10)
+
+tk.Button(root,text="Run Process",
+          command=start_processing,
+          bg="green",fg="white").pack(pady=20)
 
 root.mainloop()
