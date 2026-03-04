@@ -28,19 +28,19 @@ file_store = {
     "BS_Plan": []
 }
 
+
 # ------------------------------------------------
-# LOGGING
+# LOG
 # ------------------------------------------------
 
 def log(msg):
-
-    ts = datetime.now().strftime("%H:%M:%S")
-    line = f"[{ts}] {msg}"
-
+    ts=datetime.now().strftime("%H:%M:%S")
+    line=f"[{ts}] {msg}"
     print(line)
 
     with open(LOG_FILE,"a",encoding="utf-8") as f:
         f.write(line+"\n")
+
 
 # ------------------------------------------------
 # HEADER DETECTION
@@ -57,14 +57,14 @@ def detect_header(df):
             log(f"Header detected at row {i+1}")
             return i
 
-    log("Header not detected")
     return None
+
 
 # ------------------------------------------------
 # NORMALIZE TEXT
 # ------------------------------------------------
 
-def norm(series):
+def normalize(series):
 
     return (
         series.astype(str)
@@ -72,6 +72,7 @@ def norm(series):
         .str.strip()
         .str.upper()
     )
+
 
 # ------------------------------------------------
 # CONSOLIDATE CATEGORY
@@ -91,14 +92,14 @@ def consolidate_category(category):
 
         for sheet in xls.sheet_names:
 
-            log(f"Processing sheet: {sheet}")
+            log(f"Sheet: {sheet}")
 
             preview=pd.read_excel(file,sheet_name=sheet,header=None,nrows=60)
 
             header=detect_header(preview)
 
             if header is None:
-                log("Skipping sheet due to missing header")
+                log("Header not found")
                 continue
 
             df=pd.read_excel(file,sheet_name=sheet,header=header)
@@ -117,32 +118,46 @@ def consolidate_category(category):
 
     df=pd.concat(dfs,ignore_index=True)
 
-    log(f"Total rows before filtering: {len(df)}")
+    log(f"Total rows before filter: {len(df)}")
 
+    # normalize columns
     if "currency" in df.columns:
-        df["currency"]=norm(df["currency"])
+        df["currency"]=normalize(df["currency"])
 
     if "entity" in df.columns:
-        df["entity"]=norm(df["entity"])
+        df["entity"]=normalize(df["entity"])
 
     if "global business" in df.columns:
-        df["global business"]=norm(df["global business"])
+        df["global business"]=normalize(df["global business"])
 
-    before=len(df)
+    # debug unique values
+    if "currency" in df.columns:
+        log(f"Currency unique: {df['currency'].unique()[:10]}")
 
-    df=df[df["currency"]=="USD"]
+    if "entity" in df.columns:
+        log(f"Entity unique sample: {df['entity'].unique()[:10]}")
 
-    log(f"Rows after USD filter: {len(df)}")
+    if "global business" in df.columns:
+        log(f"GB unique sample: {df['global business'].unique()[:10]}")
 
-    df=df[df["entity"].isin(entity_list)]
+    # filtering
+    if "currency" in df.columns:
+        before=len(df)
+        df=df[df["currency"]=="USD"]
+        log(f"After USD filter: {len(df)} (was {before})")
 
-    log(f"Rows after entity filter: {len(df)}")
+    if "entity" in df.columns:
+        before=len(df)
+        df=df[df["entity"].isin(entity_list)]
+        log(f"After entity filter: {len(df)}")
 
-    df=df[df["global business"].isin(globalbusiness_list)]
-
-    log(f"Rows after global business filter: {len(df)} (was {before})")
+    if "global business" in df.columns:
+        before=len(df)
+        df=df[df["global business"].isin(globalbusiness_list)]
+        log(f"After GB filter: {len(df)}")
 
     return df
+
 
 # ------------------------------------------------
 # WRITE CONSOLIDATED FILE
@@ -150,7 +165,7 @@ def consolidate_category(category):
 
 def write_excel(file_name,sheets):
 
-    log(f"\nWriting file: {file_name}")
+    log(f"\nWriting {file_name}")
 
     wb=Workbook(write_only=True)
 
@@ -166,19 +181,16 @@ def write_excel(file_name,sheets):
 
         ws.append([c.title() for c in df.columns])
 
-        count=0
-
         for r in df.itertuples(index=False):
-
             ws.append(list(r))
-            count+=1
 
-        log(f"{count} rows written")
+        log(f"{len(df)} rows written")
 
     wb.save(file_name)
 
+
 # ------------------------------------------------
-# CREATE MAPPED FILE
+# MAPPED FILE
 # ------------------------------------------------
 
 def create_mapped_copy(original):
@@ -188,8 +200,8 @@ def create_mapped_copy(original):
     entity_map=pd.read_excel(mapper_file,sheet_name="Entity")
     product_map=pd.read_excel(mapper_file,sheet_name="Product")
 
-    entity_map["Entity"]=norm(entity_map["Entity"])
-    product_map["Product"]=norm(product_map["Product"])
+    entity_map["Entity"]=normalize(entity_map["Entity"])
+    product_map["Product"]=normalize(product_map["Product"])
 
     entity_dict=dict(zip(entity_map["Entity"],entity_map["Proxy Entity Code"]))
     product_dict=dict(zip(product_map["Product"],product_map["Proxy Product Code"]))
@@ -197,8 +209,6 @@ def create_mapped_copy(original):
     wb=load_workbook(original)
 
     for sheet in wb.sheetnames:
-
-        log(f"Processing mapping in sheet: {sheet}")
 
         ws=wb[sheet]
 
@@ -208,51 +218,51 @@ def create_mapped_copy(original):
 
             idx=headers.index("Function")+1
             ws.delete_cols(idx)
-
-            log("Function column deleted")
-
             headers.pop(idx-1)
+
+            log(f"{sheet}: Function column removed")
 
         if "Entity" in headers:
 
-            e=headers.index("Entity")+1
-            replace_count=0
+            col=headers.index("Entity")+1
+
+            count=0
 
             for r in range(2,ws.max_row+1):
 
-                val=str(ws.cell(r,e).value).strip().upper()
+                val=str(ws.cell(r,col).value).strip().upper()
 
                 if val in entity_dict:
-                    ws.cell(r,e).value=entity_dict[val]
-                    replace_count+=1
+                    ws.cell(r,col).value=entity_dict[val]
+                    count+=1
 
-            log(f"Entity replacements: {replace_count}")
+            log(f"{sheet}: Entity mapped {count} rows")
 
         if "Product" in headers:
 
-            p=headers.index("Product")+1
-            replace_count=0
+            col=headers.index("Product")+1
+
+            count=0
 
             for r in range(2,ws.max_row+1):
 
-                val=str(ws.cell(r,p).value).strip().upper()
+                val=str(ws.cell(r,col).value).strip().upper()
 
                 if val in product_dict:
-                    ws.cell(r,p).value=product_dict[val]
-                    replace_count+=1
+                    ws.cell(r,col).value=product_dict[val]
+                    count+=1
 
-            log(f"Product replacements: {replace_count}")
+            log(f"{sheet}: Product mapped {count} rows")
 
     new=original.replace(".xlsx","_Mapped.xlsx")
 
     wb.save(new)
 
-    log(f"Mapped file created: {new}")
-
     return new
 
+
 # ------------------------------------------------
-# CREATE MASKED FILE
+# MASKED FILE
 # ------------------------------------------------
 
 def create_masked_file(mapped):
@@ -262,8 +272,6 @@ def create_masked_file(mapped):
     wb=load_workbook(mapped)
 
     for sheet in wb.sheetnames:
-
-        log(f"Masking sheet: {sheet}")
 
         ws=wb[sheet]
 
@@ -283,11 +291,8 @@ def create_masked_file(mapped):
                 if isinstance(val,(int,float)):
 
                     if "pbt" in sheet.lower():
-
                         ws.cell(r,col).value=val/x_mask_value
-
                     else:
-
                         ws.cell(r,col).value=val/(x_mask_value/2)
 
     new=mapped.replace("_Mapped.xlsx","_Masked.xlsx")
@@ -296,8 +301,9 @@ def create_masked_file(mapped):
 
     log(f"Masked file created: {new}")
 
+
 # ------------------------------------------------
-# MAIN PROCESS
+# MAIN
 # ------------------------------------------------
 
 def start():
@@ -309,7 +315,6 @@ def start():
     tables={}
 
     for k in file_store:
-
         tables[k]=consolidate_category(k)
 
     output="Consolidated_Output.xlsx"
@@ -330,9 +335,10 @@ def start():
 
     create_masked_file(mapped)
 
-    log("PROCESS COMPLETED")
+    log("PROCESS COMPLETE")
 
     messagebox.showinfo("Done","All files created")
+
 
 # ------------------------------------------------
 # GUI
