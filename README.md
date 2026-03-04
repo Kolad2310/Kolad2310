@@ -4,16 +4,16 @@ from tkinter import filedialog, messagebox
 import pandas as pd
 import os
 from datetime import datetime
+import traceback
 from openpyxl import Workbook, load_workbook
 
 LOG_FILE = "Processing_Log.txt"
+HEADER_FILE = "Header_Diagnostics.xlsx"
 
 x_mask_value = 1000
 
-entity_list = ["ENTITY1","ENTITY2"]
-globalbusiness_list = ["BUSINESS1","BUSINESS2"]
-
-mapper_file = None
+entity_list = ["Entity1","Entity2"]
+globalbusiness_list = ["Business1","Business2"]
 
 file_store = {
     "RWA_Actuals": [],
@@ -28,16 +28,17 @@ file_store = {
     "BS_Plan": []
 }
 
+mapper_file = None
+
 
 # ------------------------------------------------
-# LOG
+# LOGGING
 # ------------------------------------------------
 
 def log(msg):
-    ts=datetime.now().strftime("%H:%M:%S")
-    line=f"[{ts}] {msg}"
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"[{ts}] {msg}"
     print(line)
-
     with open(LOG_FILE,"a",encoding="utf-8") as f:
         f.write(line+"\n")
 
@@ -50,11 +51,13 @@ def detect_header(df):
 
     for i in range(min(60,len(df))):
 
-        row=[str(v).strip().lower() for v in df.iloc[i]]
+        row = [str(v).strip().replace("\xa0","").lower() for v in df.iloc[i]]
 
-        if ("year" in row and "currency" in row and "entity" in row):
-
-            log(f"Header detected at row {i+1}")
+        if (
+            any("year" in r for r in row) and
+            any("currency" in r for r in row) and
+            any("entity" in r for r in row)
+        ):
             return i
 
     return None
@@ -64,10 +67,10 @@ def detect_header(df):
 # NORMALIZE TEXT
 # ------------------------------------------------
 
-def normalize(series):
+def normalize_series(s):
 
     return (
-        series.astype(str)
+        s.astype(str)
         .str.replace("\xa0","",regex=False)
         .str.strip()
         .str.upper()
@@ -80,273 +83,298 @@ def normalize(series):
 
 def consolidate_category(category):
 
-    log(f"\n--- Consolidating {category} ---")
-
-    dfs=[]
+    collected = []
+    header_info = []
 
     for file in file_store[category]:
 
-        log(f"Reading file: {file}")
+        log(f"Reading {file}")
 
-        xls=pd.ExcelFile(file)
+        xls = pd.ExcelFile(file)
 
         for sheet in xls.sheet_names:
 
-            log(f"Sheet: {sheet}")
+            preview = pd.read_excel(
+                file,
+                sheet_name=sheet,
+                header=None,
+                nrows=60,
+                dtype=object
+            )
 
-            preview=pd.read_excel(file,sheet_name=sheet,header=None,nrows=60)
+            header_row = detect_header(preview)
 
-            header=detect_header(preview)
-
-            if header is None:
-                log("Header not found")
+            if header_row is None:
                 continue
 
-            df=pd.read_excel(file,sheet_name=sheet,header=header)
+            df = pd.read_excel(
+                file,
+                sheet_name=sheet,
+                header=header_row,
+                dtype=object
+            )
 
-            df.columns=df.columns.str.strip().str.lower()
+            df.columns = df.columns.str.strip().str.lower()
 
+            # ADD SOURCE FILE COLUMN
             df.insert(0,"source_file",os.path.basename(file))
 
-            log(f"Rows loaded: {len(df)}")
+            df = df.dropna(how="all")
 
-            dfs.append(df)
+            for col in df.columns:
+                df[col] = pd.to_numeric(df[col],errors="ignore")
 
-    if not dfs:
-        log("No data collected")
-        return pd.DataFrame()
+            collected.append(df)
 
-    df=pd.concat(dfs,ignore_index=True)
+            header_info.append({
+                "Category":category,
+                "File":os.path.basename(file),
+                "Sheet":sheet,
+                "Header_Row":header_row+1,
+                "Columns":",".join(df.columns)
+            })
 
-    log(f"Total rows before filter: {len(df)}")
+    if not collected:
+        return pd.DataFrame(), header_info
 
-    # normalize columns
+    df = pd.concat(collected,ignore_index=True)
+
+    log(f"{category} rows before filter {len(df)}")
+
     if "currency" in df.columns:
-        df["currency"]=normalize(df["currency"])
+        df["currency"] = normalize_series(df["currency"])
 
     if "entity" in df.columns:
-        df["entity"]=normalize(df["entity"])
+        df["entity"] = normalize_series(df["entity"])
 
     if "global business" in df.columns:
-        df["global business"]=normalize(df["global business"])
+        df["global business"] = normalize_series(df["global business"])
 
-    # debug unique values
+    entity_clean = [e.upper() for e in entity_list]
+    gb_clean = [g.upper() for g in globalbusiness_list]
+
     if "currency" in df.columns:
-        log(f"Currency unique: {df['currency'].unique()[:10]}")
+        df = df[df["currency"]=="USD"]
 
     if "entity" in df.columns:
-        log(f"Entity unique sample: {df['entity'].unique()[:10]}")
+        df = df[df["entity"].isin(entity_clean)]
 
     if "global business" in df.columns:
-        log(f"GB unique sample: {df['global business'].unique()[:10]}")
+        df = df[df["global business"].isin(gb_clean)]
 
-    # filtering
-    if "currency" in df.columns:
-        before=len(df)
-        df=df[df["currency"]=="USD"]
-        log(f"After USD filter: {len(df)} (was {before})")
+    log(f"{category} rows after filter {len(df)}")
 
-    if "entity" in df.columns:
-        before=len(df)
-        df=df[df["entity"].isin(entity_list)]
-        log(f"After entity filter: {len(df)}")
+    if category=="PBT_Actuals" and "year" in df.columns:
 
-    if "global business" in df.columns:
-        before=len(df)
-        df=df[df["global business"].isin(globalbusiness_list)]
-        log(f"After GB filter: {len(df)}")
+        year_index = df.columns.get_loc("year")
 
-    return df
+        numeric_cols = df.columns[year_index+1:]
+
+        for col in numeric_cols:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                df[col] = df[col]/1000
+
+    return df, header_info
 
 
 # ------------------------------------------------
-# WRITE CONSOLIDATED FILE
+# WRITE OUTPUT FILE
 # ------------------------------------------------
 
-def write_excel(file_name,sheets):
+def write_output_file(file_name, sheet_dict):
 
-    log(f"\nWriting {file_name}")
+    wb = Workbook(write_only=True)
 
-    wb=Workbook(write_only=True)
+    for sheet, df in sheet_dict.items():
 
-    for sheet,df in sheets.items():
-
-        log(f"Writing sheet: {sheet}")
-
-        ws=wb.create_sheet(sheet)
+        ws = wb.create_sheet(sheet)
 
         if df.empty:
-            log("Sheet empty")
             continue
 
-        ws.append([c.title() for c in df.columns])
+        ws.append(df.columns.str.title().tolist())
 
-        for r in df.itertuples(index=False):
-            ws.append(list(r))
+        for row in df.itertuples(index=False):
 
-        log(f"{len(df)} rows written")
+            clean_row = [
+                None if pd.isna(v) else v
+                for v in row
+            ]
+
+            ws.append(clean_row)
 
     wb.save(file_name)
 
+    log(f"{file_name} written")
+
 
 # ------------------------------------------------
-# MAPPED FILE
+# CREATE MAPPED COPY
 # ------------------------------------------------
 
-def create_mapped_copy(original):
+def create_mapped_copy(original_file):
 
-    log("\nCreating mapped file")
+    log("Creating mapped copy")
 
-    entity_map=pd.read_excel(mapper_file,sheet_name="Entity")
-    product_map=pd.read_excel(mapper_file,sheet_name="Product")
+    entity_map = pd.read_excel(mapper_file,sheet_name="Entity")
+    product_map = pd.read_excel(mapper_file,sheet_name="Product")
 
-    entity_map["Entity"]=normalize(entity_map["Entity"])
-    product_map["Product"]=normalize(product_map["Product"])
+    entity_map["Entity"] = normalize_series(entity_map["Entity"])
+    product_map["Product"] = normalize_series(product_map["Product"])
 
-    entity_dict=dict(zip(entity_map["Entity"],entity_map["Proxy Entity Code"]))
-    product_dict=dict(zip(product_map["Product"],product_map["Proxy Product Code"]))
+    entity_dict = dict(zip(
+        entity_map["Entity"],
+        entity_map["Proxy Entity Code"]
+    ))
 
-    wb=load_workbook(original)
+    product_dict = dict(zip(
+        product_map["Product"],
+        product_map["Proxy Product Code"]
+    ))
+
+    wb = load_workbook(original_file)
 
     for sheet in wb.sheetnames:
 
-        ws=wb[sheet]
+        ws = wb[sheet]
 
-        headers=[c.value for c in ws[1]]
+        headers = [cell.value for cell in ws[1]]
 
         if "Function" in headers:
 
-            idx=headers.index("Function")+1
-            ws.delete_cols(idx)
-            headers.pop(idx-1)
-
-            log(f"{sheet}: Function column removed")
+            col_index = headers.index("Function")+1
+            ws.delete_cols(col_index)
+            headers.pop(col_index-1)
 
         if "Entity" in headers:
 
-            col=headers.index("Entity")+1
-
-            count=0
+            e_idx = headers.index("Entity")+1
 
             for r in range(2,ws.max_row+1):
 
-                val=str(ws.cell(r,col).value).strip().upper()
+                val = str(ws.cell(r,e_idx).value).strip().upper()
 
                 if val in entity_dict:
-                    ws.cell(r,col).value=entity_dict[val]
-                    count+=1
-
-            log(f"{sheet}: Entity mapped {count} rows")
+                    ws.cell(r,e_idx).value = entity_dict[val]
 
         if "Product" in headers:
 
-            col=headers.index("Product")+1
-
-            count=0
+            p_idx = headers.index("Product")+1
 
             for r in range(2,ws.max_row+1):
 
-                val=str(ws.cell(r,col).value).strip().upper()
+                val = str(ws.cell(r,p_idx).value).strip().upper()
 
                 if val in product_dict:
-                    ws.cell(r,col).value=product_dict[val]
-                    count+=1
+                    ws.cell(r,p_idx).value = product_dict[val]
 
-            log(f"{sheet}: Product mapped {count} rows")
+    new_file = original_file.replace(".xlsx","_Mapped.xlsx")
 
-    new=original.replace(".xlsx","_Mapped.xlsx")
+    wb.save(new_file)
 
-    wb.save(new)
+    log(f"{new_file} created")
 
-    return new
+    return new_file
 
 
 # ------------------------------------------------
-# MASKED FILE
+# CREATE MASKED FILE
 # ------------------------------------------------
 
-def create_masked_file(mapped):
+def create_masked_file(mapped_file):
 
-    log("\nCreating masked file")
-
-    wb=load_workbook(mapped)
+    wb = load_workbook(mapped_file)
 
     for sheet in wb.sheetnames:
 
-        ws=wb[sheet]
+        ws = wb[sheet]
 
-        headers=[c.value for c in ws[1]]
+        headers = [c.value for c in ws[1]]
 
         for col in range(1,len(headers)+1):
 
-            name=headers[col-1].lower()
+            name = headers[col-1].lower()
 
             if name in ["year","entity","currency","product","source_file"]:
                 continue
 
             for r in range(2,ws.max_row+1):
 
-                val=ws.cell(r,col).value
+                val = ws.cell(r,col).value
 
                 if isinstance(val,(int,float)):
 
                     if "pbt" in sheet.lower():
-                        ws.cell(r,col).value=val/x_mask_value
+                        ws.cell(r,col).value = val/x_mask_value
                     else:
-                        ws.cell(r,col).value=val/(x_mask_value/2)
+                        ws.cell(r,col).value = val/(x_mask_value/2)
 
-    new=mapped.replace("_Mapped.xlsx","_Masked.xlsx")
+    new_file = mapped_file.replace("_Mapped.xlsx","_Masked.xlsx")
 
-    wb.save(new)
+    wb.save(new_file)
 
-    log(f"Masked file created: {new}")
+    log(f"{new_file} created")
 
 
 # ------------------------------------------------
-# MAIN
+# MAIN PROCESS
 # ------------------------------------------------
 
-def start():
+def start_processing():
 
-    open(LOG_FILE,"w").close()
+    try:
 
-    log("PROCESS STARTED")
+        open(LOG_FILE,"w").close()
 
-    tables={}
+        tables={}
+        headers=[]
 
-    for k in file_store:
-        tables[k]=consolidate_category(k)
+        for key in file_store:
 
-    output="Consolidated_Output.xlsx"
+            df,h = consolidate_category(key)
 
-    write_excel(
-        output,
-        {
-        "RWA Actuals":tables["RWA_Actuals"],
-        "RWA Plan":tables["RWA_Plan"],
-        "AVBS_SD Actuals":pd.concat([tables["AVBS_Actuals"],tables["SD_Actuals"]]),
-        "AVBS_SD Plan":pd.concat([tables["AVBS_Plan"],tables["SD_Plan"]]),
-        "PBT_BS Actuals":pd.concat([tables["PBT_Actuals"],tables["BS_Actuals"]]),
-        "PBT_BS Plan":pd.concat([tables["PBT_Plan"],tables["BS_Plan"]])
-        }
-    )
+            tables[key]=df
 
-    mapped=create_mapped_copy(output)
+            headers.extend(h)
 
-    create_masked_file(mapped)
+        pd.DataFrame(headers).to_excel(HEADER_FILE,index=False)
 
-    log("PROCESS COMPLETE")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    messagebox.showinfo("Done","All files created")
+        output_file = f"Consolidated_Output_{ts}.xlsx"
+
+        write_output_file(
+            output_file,
+            {
+                "RWA Actuals":tables["RWA_Actuals"],
+                "RWA Plan":tables["RWA_Plan"],
+                "AVBS_SD Actuals":pd.concat([tables["AVBS_Actuals"],tables["SD_Actuals"]]),
+                "AVBS_SD Plan":pd.concat([tables["AVBS_Plan"],tables["SD_Plan"]]),
+                "PBT_BS Actuals":pd.concat([tables["PBT_Actuals"],tables["BS_Actuals"]]),
+                "PBT_BS Plan":pd.concat([tables["PBT_Plan"],tables["BS_Plan"]])
+            }
+        )
+
+        mapped_file = create_mapped_copy(output_file)
+
+        create_masked_file(mapped_file)
+
+        messagebox.showinfo("Success","Processing complete")
+
+    except Exception:
+
+        log(traceback.format_exc())
+
+        messagebox.showerror("Error","Processing failed")
 
 
 # ------------------------------------------------
 # GUI
 # ------------------------------------------------
 
-root=tk.Tk()
+root = tk.Tk()
 root.title("Financial Consolidation Tool")
-root.geometry("700x500")
+root.geometry("800x600")
 
 frame=tk.Frame(root)
 frame.pack(pady=20)
@@ -361,26 +389,30 @@ def select_files(key):
         file_store[key]=list(files)
         labels[key].config(text=f"{len(files)} selected")
 
+
 def select_mapper():
 
     global mapper_file
 
     mapper_file=filedialog.askopenfilename(filetypes=[("Excel","*.xlsx")])
 
-for i,k in enumerate(file_store):
+for i,key in enumerate(file_store):
 
-    tk.Label(frame,text=k,width=20).grid(row=i,column=0)
+    tk.Label(frame,text=key,width=20).grid(row=i,column=0)
 
-    tk.Button(frame,text="Select",
-              command=lambda x=k:select_files(x)).grid(row=i,column=1)
+    tk.Button(frame,text="Select Files",
+              command=lambda k=key:select_files(k)).grid(row=i,column=1)
 
     lbl=tk.Label(frame,text="None")
     lbl.grid(row=i,column=2)
 
-    labels[k]=lbl
+    labels[key]=lbl
 
-tk.Button(root,text="Select Mapper",command=select_mapper).pack(pady=10)
+tk.Button(root,text="Select Mapper File",
+          command=select_mapper).pack(pady=10)
 
-tk.Button(root,text="Run",command=start,bg="green",fg="white").pack(pady=20)
+tk.Button(root,text="Run Process",
+          command=start_processing,
+          bg="green",fg="white").pack(pady=20)
 
 root.mainloop()
