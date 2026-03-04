@@ -5,7 +5,7 @@ import pandas as pd
 import os
 from datetime import datetime
 import traceback
-import xlsxwriter
+from openpyxl import Workbook
 
 LOG_FILE = "Processing_Log.txt"
 HEADER_FILE = "Header_Diagnostics.xlsx"
@@ -13,9 +13,9 @@ HEADER_FILE = "Header_Diagnostics.xlsx"
 EXCEL_MAX_ROWS = 1048576
 DATA_ROWS_PER_SHEET = EXCEL_MAX_ROWS - 1
 
-# ----------------------------------------------------
-# FILTER LISTS
-# ----------------------------------------------------
+# ------------------------------------------------
+# FILTER LISTS (EDIT THESE)
+# ------------------------------------------------
 
 entity_list = [
     "Entity1","Entity2","Entity3"
@@ -25,7 +25,7 @@ globalbusiness_list = [
     "Business1","Business2","Business3"
 ]
 
-# ----------------------------------------------------
+# ------------------------------------------------
 
 file_store = {
     "RWA_Actuals": [],
@@ -40,9 +40,9 @@ file_store = {
     "BS_Plan": []
 }
 
-# ----------------------------------------------------
+# ------------------------------------------------
 # Logging
-# ----------------------------------------------------
+# ------------------------------------------------
 
 def log(msg):
     ts = datetime.now().strftime("%H:%M:%S")
@@ -51,9 +51,9 @@ def log(msg):
     with open(LOG_FILE,"a",encoding="utf-8") as f:
         f.write(line+"\n")
 
-# ----------------------------------------------------
+# ------------------------------------------------
 # Header Detection
-# ----------------------------------------------------
+# ------------------------------------------------
 
 def detect_header(df):
 
@@ -70,16 +70,9 @@ def detect_header(df):
 
     return None
 
-# ----------------------------------------------------
-# Column Proper Case
-# ----------------------------------------------------
-
-def proper_case(cols):
-    return [str(c).replace("_"," ").title() for c in cols]
-
-# ----------------------------------------------------
-# Normalize values
-# ----------------------------------------------------
+# ------------------------------------------------
+# Normalize text
+# ------------------------------------------------
 
 def normalize_series(s):
 
@@ -87,11 +80,23 @@ def normalize_series(s):
         s.astype(str)
         .str.replace("\xa0","",regex=False)
         .str.strip()
+        .str.upper()
     )
 
-# ----------------------------------------------------
+# ------------------------------------------------
+# Proper case headers
+# ------------------------------------------------
+
+def proper_case(cols):
+
+    return [
+        str(c).replace("_"," ").title()
+        for c in cols
+    ]
+
+# ------------------------------------------------
 # Consolidate Category
-# ----------------------------------------------------
+# ------------------------------------------------
 
 def consolidate_category(category):
 
@@ -100,7 +105,7 @@ def consolidate_category(category):
 
     for file in file_store[category]:
 
-        log(f"Reading file {file}")
+        log(f"Reading {file}")
 
         xls = pd.ExcelFile(file)
 
@@ -156,11 +161,11 @@ def consolidate_category(category):
     log(f"{category} rows before filter {len(df)}")
 
     # ------------------------------------------------
-    # NORMALIZE FILTER COLUMNS
+    # Normalize columns
     # ------------------------------------------------
 
     if "currency" in df.columns:
-        df["currency"] = normalize_series(df["currency"]).str.upper()
+        df["currency"] = normalize_series(df["currency"])
 
     if "entity" in df.columns:
         df["entity"] = normalize_series(df["entity"])
@@ -168,11 +173,11 @@ def consolidate_category(category):
     if "global business" in df.columns:
         df["global business"] = normalize_series(df["global business"])
 
-    entity_clean = [e.strip() for e in entity_list]
-    gb_clean = [g.strip() for g in globalbusiness_list]
+    entity_clean = [e.strip().upper() for e in entity_list]
+    gb_clean = [g.strip().upper() for g in globalbusiness_list]
 
     # ------------------------------------------------
-    # FILTER
+    # Filtering
     # ------------------------------------------------
 
     if "currency" in df.columns:
@@ -187,7 +192,7 @@ def consolidate_category(category):
     log(f"{category} rows after filter {len(df)}")
 
     # ------------------------------------------------
-    # PBT LOGIC
+    # PBT logic
     # ------------------------------------------------
 
     if category=="PBT_Actuals" and "year" in df.columns:
@@ -201,52 +206,57 @@ def consolidate_category(category):
 
     return df, header_info
 
-# ----------------------------------------------------
-# Excel Writer
-# ----------------------------------------------------
+# ------------------------------------------------
+# Excel Writer (openpyxl write-only mode)
+# ------------------------------------------------
 
 def write_excel(file_name, sheet_dict):
 
-    workbook = xlsxwriter.Workbook(file_name,{'constant_memory':True})
+    wb = Workbook(write_only=True)
 
     for base_sheet, df in sheet_dict.items():
 
         if df.empty:
-            workbook.add_worksheet(base_sheet)
+            ws = wb.create_sheet(base_sheet)
             continue
 
         headers = proper_case(df.columns)
 
         total_rows = len(df)
-        splits = (total_rows//DATA_ROWS_PER_SHEET)+1
+        splits = (total_rows // DATA_ROWS_PER_SHEET) + 1
 
         for split in range(splits):
 
-            start = split*DATA_ROWS_PER_SHEET
-            end = min(start+DATA_ROWS_PER_SHEET,total_rows)
+            start = split * DATA_ROWS_PER_SHEET
+            end = min(start + DATA_ROWS_PER_SHEET,total_rows)
 
-            if start>=total_rows:
+            if start >= total_rows:
                 break
 
             sheet_name = base_sheet if split==0 else f"{base_sheet}_{split+1}"
 
-            ws = workbook.add_worksheet(sheet_name[:31])
+            ws = wb.create_sheet(sheet_name[:31])
 
-            for col_num,h in enumerate(headers):
-                ws.write(0,col_num,h)
+            ws.append(headers)
 
             chunk = df.iloc[start:end]
 
-            for row_num,row in enumerate(chunk.itertuples(index=False),1):
-                ws.write_row(row_num,0,row)
+            for row in chunk.itertuples(index=False):
 
-    workbook.close()
+                clean_row = [
+                    None if pd.isna(v) or v in [float("inf"),float("-inf")] else v
+                    for v in row
+                ]
+
+                ws.append(clean_row)
+
+    wb.save(file_name)
 
     log(f"{file_name} written")
 
-# ----------------------------------------------------
+# ------------------------------------------------
 # Main Process
-# ----------------------------------------------------
+# ------------------------------------------------
 
 def start_processing():
 
@@ -273,6 +283,7 @@ def start_processing():
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # RWA
+
         write_excel(
             f"RWA_Output_{ts}.xlsx",
             {
@@ -282,6 +293,7 @@ def start_processing():
         )
 
         # AVBS_SD
+
         write_excel(
             f"AVBS_SD_Output_{ts}.xlsx",
             {
@@ -290,6 +302,7 @@ def start_processing():
                         [tables["AVBS_Actuals"],tables["SD_Actuals"]],
                         ignore_index=True
                     ),
+
                 "AVBS_SD Plan":
                     pd.concat(
                         [tables["AVBS_Plan"],tables["SD_Plan"]],
@@ -299,6 +312,7 @@ def start_processing():
         )
 
         # PBT_BS
+
         write_excel(
             f"PBT_BS_Output_{ts}.xlsx",
             {
@@ -307,6 +321,7 @@ def start_processing():
                         [tables["PBT_Actuals"],tables["BS_Actuals"]],
                         ignore_index=True
                     ),
+
                 "PBT_BS Plan":
                     pd.concat(
                         [tables["PBT_Plan"],tables["BS_Plan"]],
@@ -329,18 +344,22 @@ def start_processing():
 
         messagebox.showerror(
             "Error",
-            "Processing failed. Check log file."
+            "Processing failed. Check Processing_Log.txt"
         )
 
-# ----------------------------------------------------
+# ------------------------------------------------
 # GUI
-# ----------------------------------------------------
+# ------------------------------------------------
 
 root = tk.Tk()
 root.title("Financial Consolidation Tool")
 root.geometry("800x600")
 
-tk.Label(root,text="Select Files",font=("Arial",14,"bold")).pack(pady=15)
+tk.Label(
+    root,
+    text="Select Files",
+    font=("Arial",14,"bold")
+).pack(pady=15)
 
 frame = tk.Frame(root)
 frame.pack()
