@@ -13,9 +13,9 @@ HEADER_FILE = "Header_Diagnostics.xlsx"
 EXCEL_MAX_ROWS = 1048576
 DATA_ROWS_PER_SHEET = EXCEL_MAX_ROWS - 1
 
-# -----------------------------------------------------
+# ----------------------------------------------------
 # FILTER LISTS
-# -----------------------------------------------------
+# ----------------------------------------------------
 
 entity_list = [
     "Entity1","Entity2","Entity3"
@@ -25,7 +25,7 @@ globalbusiness_list = [
     "Business1","Business2","Business3"
 ]
 
-# -----------------------------------------------------
+# ----------------------------------------------------
 
 file_store = {
     "RWA_Actuals": [],
@@ -40,29 +40,26 @@ file_store = {
     "BS_Plan": []
 }
 
-# -----------------------------------------------------
+# ----------------------------------------------------
 # Logging
-# -----------------------------------------------------
+# ----------------------------------------------------
 
 def log(msg):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    line = f"[{timestamp}] {msg}"
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"[{ts}] {msg}"
     print(line)
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+    with open(LOG_FILE,"a",encoding="utf-8") as f:
+        f.write(line+"\n")
 
-# -----------------------------------------------------
+# ----------------------------------------------------
 # Header Detection
-# -----------------------------------------------------
+# ----------------------------------------------------
 
 def detect_header(df):
 
-    for i in range(0, min(60, len(df))):
+    for i in range(min(60,len(df))):
 
-        row = [
-            str(v).strip().replace("\xa0","").lower()
-            for v in df.iloc[i]
-        ]
+        row = [str(v).strip().replace("\xa0","").lower() for v in df.iloc[i]]
 
         if (
             any("year" in r for r in row) and
@@ -73,31 +70,38 @@ def detect_header(df):
 
     return None
 
-# -----------------------------------------------------
-# Proper Case Headers
-# -----------------------------------------------------
+# ----------------------------------------------------
+# Column Proper Case
+# ----------------------------------------------------
 
-def proper_case_columns(cols):
+def proper_case(cols):
+    return [str(c).replace("_"," ").title() for c in cols]
 
-    return [
-        str(c)
-        .replace("_"," ")
-        .title()
-        for c in cols
-    ]
+# ----------------------------------------------------
+# Normalize values
+# ----------------------------------------------------
 
-# -----------------------------------------------------
+def normalize_series(s):
+
+    return (
+        s.astype(str)
+        .str.replace("\xa0","",regex=False)
+        .str.strip()
+    )
+
+# ----------------------------------------------------
 # Consolidate Category
-# -----------------------------------------------------
+# ----------------------------------------------------
 
 def consolidate_category(category):
 
     collected = []
-    header_records = []
+    header_info = []
 
     for file in file_store[category]:
 
         log(f"Reading file {file}")
+
         xls = pd.ExcelFile(file)
 
         for sheet in xls.sheet_names:
@@ -124,78 +128,86 @@ def consolidate_category(category):
             )
 
             df.columns = df.columns.str.strip().str.lower()
-
             df = df.dropna(how="all")
 
-            # convert numeric columns where possible
             for col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="ignore")
+                df[col] = pd.to_numeric(df[col],errors="ignore")
 
             df["source_file"] = os.path.basename(file)
             df["source_sheet"] = sheet
 
-            header_records.append({
-                "Category": category,
-                "File": os.path.basename(file),
-                "Sheet": sheet,
-                "Header_Row": header_row + 1,
-                "Columns": ", ".join(df.columns)
-            })
-
             collected.append(df)
 
-            log(f"{category} {sheet} rows: {len(df)}")
+            header_info.append({
+                "Category":category,
+                "File":os.path.basename(file),
+                "Sheet":sheet,
+                "Header_Row":header_row+1,
+                "Columns":",".join(df.columns)
+            })
+
+            log(f"{category} {sheet} rows {len(df)}")
 
     if not collected:
-        return pd.DataFrame(), header_records
+        return pd.DataFrame(), header_info
 
-    df = pd.concat(collected, ignore_index=True)
+    df = pd.concat(collected,ignore_index=True)
 
-    log(f"{category} total rows before filter: {len(df)}")
+    log(f"{category} rows before filter {len(df)}")
 
-    # -------------------------------------------------
-    # FILTER LOGIC
-    # -------------------------------------------------
+    # ------------------------------------------------
+    # NORMALIZE FILTER COLUMNS
+    # ------------------------------------------------
 
     if "currency" in df.columns:
-        df = df[df["currency"].astype(str).str.upper() == "USD"]
+        df["currency"] = normalize_series(df["currency"]).str.upper()
 
     if "entity" in df.columns:
-        df = df[df["entity"].isin(entity_list)]
+        df["entity"] = normalize_series(df["entity"])
 
     if "global business" in df.columns:
-        df = df[df["global business"].isin(globalbusiness_list)]
+        df["global business"] = normalize_series(df["global business"])
 
-    log(f"{category} rows after filter: {len(df)}")
+    entity_clean = [e.strip() for e in entity_list]
+    gb_clean = [g.strip() for g in globalbusiness_list]
 
-    # -------------------------------------------------
-    # PBT ÷1000 AFTER CONSOLIDATION
-    # -------------------------------------------------
+    # ------------------------------------------------
+    # FILTER
+    # ------------------------------------------------
 
-    if category == "PBT_Actuals" and "year" in df.columns:
+    if "currency" in df.columns:
+        df = df[df["currency"]=="USD"]
 
-        log("Applying PBT /1000 logic")
+    if "entity" in df.columns:
+        df = df[df["entity"].isin(entity_clean)]
+
+    if "global business" in df.columns:
+        df = df[df["global business"].isin(gb_clean)]
+
+    log(f"{category} rows after filter {len(df)}")
+
+    # ------------------------------------------------
+    # PBT LOGIC
+    # ------------------------------------------------
+
+    if category=="PBT_Actuals" and "year" in df.columns:
 
         year_index = df.columns.get_loc("year")
-
         numeric_cols = df.columns[year_index+1:]
 
         for col in numeric_cols:
             if pd.api.types.is_numeric_dtype(df[col]):
-                df[col] = df[col] / 1000
+                df[col] = df[col]/1000
 
-    return df, header_records
+    return df, header_info
 
-# -----------------------------------------------------
-# Excel Writing with Sheet Split
-# -----------------------------------------------------
+# ----------------------------------------------------
+# Excel Writer
+# ----------------------------------------------------
 
 def write_excel(file_name, sheet_dict):
 
-    workbook = xlsxwriter.Workbook(
-        file_name,
-        {'constant_memory': True}
-    )
+    workbook = xlsxwriter.Workbook(file_name,{'constant_memory':True})
 
     for base_sheet, df in sheet_dict.items():
 
@@ -203,46 +215,38 @@ def write_excel(file_name, sheet_dict):
             workbook.add_worksheet(base_sheet)
             continue
 
+        headers = proper_case(df.columns)
+
         total_rows = len(df)
+        splits = (total_rows//DATA_ROWS_PER_SHEET)+1
 
-        splits = (total_rows // DATA_ROWS_PER_SHEET) + 1
+        for split in range(splits):
 
-        headers = proper_case_columns(df.columns)
+            start = split*DATA_ROWS_PER_SHEET
+            end = min(start+DATA_ROWS_PER_SHEET,total_rows)
 
-        for split_index in range(splits):
-
-            start = split_index * DATA_ROWS_PER_SHEET
-            end = min(start + DATA_ROWS_PER_SHEET, total_rows)
-
-            if start >= total_rows:
+            if start>=total_rows:
                 break
 
-            sheet_name = (
-                base_sheet
-                if split_index == 0
-                else f"{base_sheet}_{split_index+1}"
-            )
+            sheet_name = base_sheet if split==0 else f"{base_sheet}_{split+1}"
 
             ws = workbook.add_worksheet(sheet_name[:31])
 
-            for col_num, col_name in enumerate(headers):
-                ws.write(0, col_num, col_name)
+            for col_num,h in enumerate(headers):
+                ws.write(0,col_num,h)
 
             chunk = df.iloc[start:end]
 
-            for row_num, row in enumerate(
-                chunk.itertuples(index=False),
-                start=1
-            ):
+            for row_num,row in enumerate(chunk.itertuples(index=False),1):
                 ws.write_row(row_num,0,row)
 
     workbook.close()
 
     log(f"{file_name} written")
 
-# -----------------------------------------------------
-# MAIN PROCESS
-# -----------------------------------------------------
+# ----------------------------------------------------
+# Main Process
+# ----------------------------------------------------
 
 def start_processing():
 
@@ -257,41 +261,38 @@ def start_processing():
 
         for key in file_store:
 
-            df, h = consolidate_category(key)
+            df,h = consolidate_category(key)
 
-            tables[key] = df
+            tables[key]=df
             headers.extend(h)
 
-        pd.DataFrame(headers).to_excel(
-            HEADER_FILE,
-            index=False
-        )
+        pd.DataFrame(headers).to_excel(HEADER_FILE,index=False)
 
         log("Header diagnostics written")
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # RWA
         write_excel(
-            f"RWA_Output_{timestamp}.xlsx",
+            f"RWA_Output_{ts}.xlsx",
             {
-                "RWA Actuals": tables["RWA_Actuals"],
-                "RWA Plan": tables["RWA_Plan"]
+                "RWA Actuals":tables["RWA_Actuals"],
+                "RWA Plan":tables["RWA_Plan"]
             }
         )
 
         # AVBS_SD
         write_excel(
-            f"AVBS_SD_Output_{timestamp}.xlsx",
+            f"AVBS_SD_Output_{ts}.xlsx",
             {
                 "AVBS_SD Actuals":
                     pd.concat(
-                        [tables["AVBS_Actuals"], tables["SD_Actuals"]],
+                        [tables["AVBS_Actuals"],tables["SD_Actuals"]],
                         ignore_index=True
                     ),
                 "AVBS_SD Plan":
                     pd.concat(
-                        [tables["AVBS_Plan"], tables["SD_Plan"]],
+                        [tables["AVBS_Plan"],tables["SD_Plan"]],
                         ignore_index=True
                     )
             }
@@ -299,26 +300,26 @@ def start_processing():
 
         # PBT_BS
         write_excel(
-            f"PBT_BS_Output_{timestamp}.xlsx",
+            f"PBT_BS_Output_{ts}.xlsx",
             {
                 "PBT_BS Actuals":
                     pd.concat(
-                        [tables["PBT_Actuals"], tables["BS_Actuals"]],
+                        [tables["PBT_Actuals"],tables["BS_Actuals"]],
                         ignore_index=True
                     ),
                 "PBT_BS Plan":
                     pd.concat(
-                        [tables["PBT_Plan"], tables["BS_Plan"]],
+                        [tables["PBT_Plan"],tables["BS_Plan"]],
                         ignore_index=True
                     )
             }
         )
 
-        log("Processing complete")
+        log("Processing completed")
 
         messagebox.showinfo(
             "Success",
-            "Processing finished successfully"
+            "Processing completed successfully"
         )
 
     except Exception:
@@ -328,27 +329,23 @@ def start_processing():
 
         messagebox.showerror(
             "Error",
-            "Processing failed. Check Processing_Log.txt"
+            "Processing failed. Check log file."
         )
 
-# -----------------------------------------------------
+# ----------------------------------------------------
 # GUI
-# -----------------------------------------------------
+# ----------------------------------------------------
 
 root = tk.Tk()
 root.title("Financial Consolidation Tool")
 root.geometry("800x600")
 
-tk.Label(
-    root,
-    text="Select Files",
-    font=("Arial",14,"bold")
-).pack(pady=15)
+tk.Label(root,text="Select Files",font=("Arial",14,"bold")).pack(pady=15)
 
 frame = tk.Frame(root)
 frame.pack()
 
-labels = {}
+labels={}
 
 def select_files_gui(key):
 
@@ -357,16 +354,11 @@ def select_files_gui(key):
     )
 
     if files:
-
-        file_store[key] = list(files)
-
-        labels[key].config(
-            text=f"{len(files)} files selected"
-        )
-
+        file_store[key]=list(files)
+        labels[key].config(text=f"{len(files)} files selected")
         log(f"{key} files selected")
 
-for i,key in enumerate(file_store.keys()):
+for i,key in enumerate(file_store):
 
     tk.Label(frame,text=key,width=22).grid(row=i,column=0)
 
@@ -376,11 +368,10 @@ for i,key in enumerate(file_store.keys()):
         command=lambda k=key:select_files_gui(k)
     ).grid(row=i,column=1)
 
-    lbl = tk.Label(frame,text="No files selected",width=25)
-
+    lbl=tk.Label(frame,text="No files selected",width=25)
     lbl.grid(row=i,column=2)
 
-    labels[key] = lbl
+    labels[key]=lbl
 
 tk.Button(
     root,
