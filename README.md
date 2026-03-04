@@ -1,6 +1,7 @@
 ```
 import tkinter as tk
 from tkinter import filedialog, messagebox
+from tkinter.scrolledtext import ScrolledText
 import pandas as pd
 import os
 from datetime import datetime
@@ -36,11 +37,21 @@ mapper_file = None
 # ------------------------------------------------
 
 def log(msg):
+
     ts = datetime.now().strftime("%H:%M:%S")
     line = f"[{ts}] {msg}"
-    print(line)
+
+    print(line, flush=True)
+
     with open(LOG_FILE,"a",encoding="utf-8") as f:
         f.write(line+"\n")
+
+    try:
+        log_box.insert(tk.END,line+"\n")
+        log_box.see(tk.END)
+        root.update()
+    except:
+        pass
 
 
 # ------------------------------------------------
@@ -58,8 +69,10 @@ def detect_header(df):
             any("currency" in r for r in row) and
             any("entity" in r for r in row)
         ):
+            log(f"Header detected at row {i+1}")
             return i
 
+    log("Header not found")
     return None
 
 
@@ -83,16 +96,20 @@ def normalize_series(s):
 
 def consolidate_category(category):
 
+    log(f"--- Processing {category} ---")
+
     collected = []
     header_info = []
 
     for file in file_store[category]:
 
-        log(f"Reading {file}")
+        log(f"Reading file {file}")
 
         xls = pd.ExcelFile(file)
 
         for sheet in xls.sheet_names:
+
+            log(f"Reading sheet {sheet}")
 
             preview = pd.read_excel(
                 file,
@@ -116,7 +133,7 @@ def consolidate_category(category):
 
             df.columns = df.columns.str.strip().str.lower()
 
-            # ADD SOURCE FILE COLUMN
+            # ADD FILE NAME COLUMN
             df.insert(0,"source_file",os.path.basename(file))
 
             df = df.dropna(how="all")
@@ -133,6 +150,8 @@ def consolidate_category(category):
                 "Header_Row":header_row+1,
                 "Columns":",".join(df.columns)
             })
+
+            log(f"{len(df)} rows loaded")
 
     if not collected:
         return pd.DataFrame(), header_info
@@ -164,6 +183,7 @@ def consolidate_category(category):
 
     log(f"{category} rows after filter {len(df)}")
 
+    # PBT adjustment
     if category=="PBT_Actuals" and "year" in df.columns:
 
         year_index = df.columns.get_loc("year")
@@ -183,6 +203,8 @@ def consolidate_category(category):
 
 def write_output_file(file_name, sheet_dict):
 
+    log(f"Writing file {file_name}")
+
     wb = Workbook(write_only=True)
 
     for sheet, df in sheet_dict.items():
@@ -190,6 +212,7 @@ def write_output_file(file_name, sheet_dict):
         ws = wb.create_sheet(sheet)
 
         if df.empty:
+            log(f"{sheet} empty")
             continue
 
         ws.append(df.columns.str.title().tolist())
@@ -203,18 +226,18 @@ def write_output_file(file_name, sheet_dict):
 
             ws.append(clean_row)
 
-    wb.save(file_name)
+        log(f"{sheet} written {len(df)} rows")
 
-    log(f"{file_name} written")
+    wb.save(file_name)
 
 
 # ------------------------------------------------
-# CREATE MAPPED COPY
+# CREATE MAPPED FILE
 # ------------------------------------------------
 
 def create_mapped_copy(original_file):
 
-    log("Creating mapped copy")
+    log("Creating mapped file")
 
     entity_map = pd.read_excel(mapper_file,sheet_name="Entity")
     product_map = pd.read_excel(mapper_file,sheet_name="Product")
@@ -246,27 +269,39 @@ def create_mapped_copy(original_file):
             ws.delete_cols(col_index)
             headers.pop(col_index-1)
 
+            log(f"{sheet} function column removed")
+
         if "Entity" in headers:
 
             e_idx = headers.index("Entity")+1
+            count=0
 
             for r in range(2,ws.max_row+1):
 
                 val = str(ws.cell(r,e_idx).value).strip().upper()
 
                 if val in entity_dict:
+
                     ws.cell(r,e_idx).value = entity_dict[val]
+                    count+=1
+
+            log(f"{sheet} entity mapped {count} rows")
 
         if "Product" in headers:
 
             p_idx = headers.index("Product")+1
+            count=0
 
             for r in range(2,ws.max_row+1):
 
                 val = str(ws.cell(r,p_idx).value).strip().upper()
 
                 if val in product_dict:
+
                     ws.cell(r,p_idx).value = product_dict[val]
+                    count+=1
+
+            log(f"{sheet} product mapped {count} rows")
 
     new_file = original_file.replace(".xlsx","_Mapped.xlsx")
 
@@ -282,6 +317,8 @@ def create_mapped_copy(original_file):
 # ------------------------------------------------
 
 def create_masked_file(mapped_file):
+
+    log("Creating masked file")
 
     wb = load_workbook(mapped_file)
 
@@ -374,10 +411,10 @@ def start_processing():
 
 root = tk.Tk()
 root.title("Financial Consolidation Tool")
-root.geometry("800x600")
+root.geometry("900x650")
 
 frame=tk.Frame(root)
-frame.pack(pady=20)
+frame.pack(pady=10)
 
 labels={}
 
@@ -413,6 +450,10 @@ tk.Button(root,text="Select Mapper File",
 
 tk.Button(root,text="Run Process",
           command=start_processing,
-          bg="green",fg="white").pack(pady=20)
+          bg="green",fg="white").pack(pady=10)
+
+# LOG WINDOW
+log_box = ScrolledText(root,height=15)
+log_box.pack(fill="both",expand=True,padx=10,pady=10)
 
 root.mainloop()
