@@ -1,109 +1,93 @@
 ```
 import os
-import time
 import logging
-import requests
-from urllib.parse import urlparse
+from faster_whisper import WhisperModel
+from moviepy.editor import VideoFileClip
 
-# ---------- Logging Configuration ----------
-LOG_DIR = "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
 
+# Logging configuration
 logging.basicConfig(
-    filename=os.path.join(LOG_DIR, "media_download.log"),
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
 
-def download_media(media_links, parent_folder="media", retries=3, delay=5):
-    """
-    Download media files from URLs.
+def extract_audio(video_path, audio_path):
+    try:
+        logging.info("Step 1: Extracting audio from video...")
+        video = VideoFileClip(video_path)
+        video.audio.write_audiofile(audio_path)
+        logging.info("Audio extraction completed")
+    except Exception as e:
+        logging.error(f"Audio extraction failed: {e}")
+        raise
 
-    Parameters
-    ----------
-    media_links : list
-        List of media URLs (Zoom recordings, video links etc.)
 
-    parent_folder : str
-        Folder where files will be downloaded
+def transcribe_audio(audio_path):
+    try:
+        logging.info("Step 2: Loading Whisper model...")
+        model = WhisperModel("base", compute_type="int8")
 
-    retries : int
-        Number of retry attempts
+        logging.info("Step 3: Transcribing audio...")
+        segments, info = model.transcribe(audio_path)
 
-    delay : int
-        Seconds to wait between retries
+        transcript_lines = []
 
-    Returns
-    -------
-    list
-        List of downloaded file paths
-    """
+        for segment in segments:
+            start = round(segment.start, 2)
+            end = round(segment.end, 2)
+            text = segment.text.strip()
 
-    os.makedirs(parent_folder, exist_ok=True)
+            line = f"[{start}s - {end}s] {text}"
+            transcript_lines.append(line)
 
-    downloaded_files = []
+        logging.info("Transcription completed")
+        return transcript_lines
 
-    for link in media_links:
+    except Exception as e:
+        logging.error(f"Transcription failed: {e}")
+        raise
 
-        attempt = 0
-        success = False
 
-        while attempt < retries and not success:
+def save_to_txt(transcript_lines, output_file):
+    try:
+        logging.info("Step 4: Writing transcript to txt file...")
 
-            try:
-                logging.info(f"Attempt {attempt+1} downloading {link}")
+        with open(output_file, "w", encoding="utf-8") as f:
+            for line in transcript_lines:
+                f.write(line + "\n")
 
-                response = requests.get(link, stream=True, timeout=60)
+        logging.info(f"Transcript saved to {output_file}")
 
-                if response.status_code == 200:
+    except Exception as e:
+        logging.error(f"Failed writing txt file: {e}")
+        raise
 
-                    parsed = urlparse(link)
-                    filename = os.path.basename(parsed.path)
 
-                    if not filename:
-                        filename = f"media_{int(time.time())}.mp4"
+def video_to_transcript(video_path, output_txt="transcript.txt"):
 
-                    filepath = os.path.join(parent_folder, filename)
+    audio_path = "temp_audio.wav"
 
-                    with open(filepath, "wb") as file:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                file.write(chunk)
+    try:
+        logging.info("Process started")
 
-                    logging.info(f"Download successful: {filepath}")
-                    downloaded_files.append(filepath)
-                    success = True
+        extract_audio(video_path, audio_path)
 
-                else:
-                    logging.warning(f"Failed with status {response.status_code} for {link}")
-                    raise Exception("Download failed")
+        transcript_lines = transcribe_audio(audio_path)
 
-            except Exception as e:
+        save_to_txt(transcript_lines, output_txt)
 
-                attempt += 1
-                logging.error(f"Error downloading {link}: {str(e)}")
+    finally:
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+            logging.info("Temporary audio file removed")
 
-                if attempt < retries:
-                    logging.info(f"Retrying in {delay} seconds...")
-                    time.sleep(delay)
-
-        if not success:
-            logging.error(f"All retries failed for {link}")
-
-    return downloaded_files
+        logging.info("Process finished")
 
 
 if __name__ == "__main__":
 
-    # Example run
-    sample_links = [
-        "https://example.com/video1.mp4",
-        "https://example.com/video2.mp4"
-    ]
+    video_file = "video.mp4"   # Replace with your video path
+    output_file = "video_transcript.txt"
 
-    result = download_media(sample_links)
-
-    print("Downloaded files:")
-    for r in result:
-        print(r)
+    video_to_transcript(video_file, output_file)
