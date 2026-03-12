@@ -4,7 +4,7 @@ import pythoncom
 import time
 
 
-def refresh_selected_sheets(file_path, value, l):
+def refresh_selected_sheets_formula_only(file_path, value, sheet_list):
 
     pythoncom.CoInitialize()
 
@@ -16,8 +16,6 @@ def refresh_selected_sheets(file_path, value, l):
         excel.ScreenUpdating = False
         excel.EnableEvents = False
         excel.AskToUpdateLinks = False
-
-        # Disable macros
         excel.AutomationSecurity = 3
 
         print("Opening workbook...")
@@ -31,38 +29,39 @@ def refresh_selected_sheets(file_path, value, l):
 
         print("Workbook opened")
 
-        # Prevent automatic calculation
-        excel.Calculation = -4135  # xlCalculationManual
+        # Disable automatic recalculation
+        excel.Calculation = -4135
 
         # Update F1
-        landing_sheet = wb.Worksheets("Landing Page DB")
-        landing_sheet.Range("F1").Value = value
-
+        wb.Worksheets("Landing Page DB").Range("F1").Value = value
         print("Updated Landing Page DB!F1")
 
-        print("\nStarting sheet refresh...\n")
+        print("\nStarting formula-only recalculation...\n")
 
-        for sheet_name in l:
+        xlCellTypeFormulas = -4123
+
+        for sheet_name in sheet_list:
 
             try:
                 sheet = wb.Worksheets(sheet_name)
 
                 print(f"Refreshing sheet: {sheet_name}")
 
-                used_range = sheet.UsedRange
+                used = sheet.UsedRange
 
-                # Calculate only used cells
-                used_range.Calculate()
+                try:
+                    formula_cells = used.SpecialCells(xlCellTypeFormulas)
+                    formula_cells.Calculate()
+                except:
+                    print("No formula cells found")
 
                 while excel.CalculationState != 0:
                     time.sleep(0.5)
 
-                print(f"Finished refreshing: {sheet_name}\n")
+                print(f"Finished: {sheet_name}\n")
 
             except Exception as e:
                 print(f"Error refreshing {sheet_name}: {e}")
-
-        print("All requested sheets refreshed")
 
         wb.Save()
         wb.Close(False)
@@ -76,13 +75,12 @@ def refresh_selected_sheets(file_path, value, l):
     print("Process completed")
 
 
-# Example usage
-file_path = r"C:\path\to\file.xlsx"
+file_path = r"C:\path\file.xlsx"
 
-l = [
+sheets = [
     "Landing Page DB",
     "Revenue Model",
     "Dashboard"
 ]
 
-refresh_selected_sheets(file_path, "New Value", l)
+refresh_selected_sheets_formula_only(file_path, "New Value", sheets)
