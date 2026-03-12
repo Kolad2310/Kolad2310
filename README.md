@@ -4,7 +4,7 @@ import pythoncom
 import time
 
 
-def refresh_workbook_sheetwise(file_path, value):
+def refresh_selected_sheets(file_path, value, l):
 
     pythoncom.CoInitialize()
 
@@ -31,47 +31,58 @@ def refresh_workbook_sheetwise(file_path, value):
 
         print("Workbook opened")
 
-        # Update value
-        sheet = wb.Worksheets("Landing Page DB")
-        sheet.Range("F1").Value = value
+        # Prevent automatic calculation
+        excel.Calculation = -4135  # xlCalculationManual
+
+        # Update F1
+        landing_sheet = wb.Worksheets("Landing Page DB")
+        landing_sheet.Range("F1").Value = value
 
         print("Updated Landing Page DB!F1")
 
-        # Set manual calculation so Excel doesn't auto calculate everything
-        excel.Calculation = -4135  # xlCalculationManual
+        print("\nStarting sheet refresh...\n")
 
-        print("Starting sheet-by-sheet recalculation...\n")
+        for sheet_name in l:
 
-        for sheet in wb.Worksheets:
+            try:
+                sheet = wb.Worksheets(sheet_name)
 
-            sheet_name = sheet.Name
-            print(f"Refreshing sheet: {sheet_name}")
+                print(f"Refreshing sheet: {sheet_name}")
 
-            sheet.Calculate()
+                used_range = sheet.UsedRange
 
-            while excel.CalculationState != 0:
-                time.sleep(0.5)
+                # Calculate only used cells
+                used_range.Calculate()
 
-            print(f"Finished: {sheet_name}\n")
+                while excel.CalculationState != 0:
+                    time.sleep(0.5)
 
-        print("All sheets refreshed")
+                print(f"Finished refreshing: {sheet_name}\n")
+
+            except Exception as e:
+                print(f"Error refreshing {sheet_name}: {e}")
+
+        print("All requested sheets refreshed")
 
         wb.Save()
         wb.Close(False)
 
         print("Workbook saved and closed")
 
-    except Exception as e:
-        print("Error:", e)
-
     finally:
         excel.Quit()
         pythoncom.CoUninitialize()
 
-    print("Process completed successfully")
+    print("Process completed")
 
 
 # Example usage
-file_path = r"C:\path\to\your\workbook.xlsx"
+file_path = r"C:\path\to\file.xlsx"
 
-refresh_workbook_sheetwise(file_path, "New String Value")
+l = [
+    "Landing Page DB",
+    "Revenue Model",
+    "Dashboard"
+]
+
+refresh_selected_sheets(file_path, "New Value", l)
