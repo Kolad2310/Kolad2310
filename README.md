@@ -1,86 +1,109 @@
 ```
-import win32com.client as win32
-import pythoncom
-import time
+import pandas as pd
 
-
-def refresh_selected_sheets_formula_only(file_path, value, sheet_list):
-
-    pythoncom.CoInitialize()
-
-    excel = win32.gencache.EnsureDispatch("Excel.Application")
-
-    try:
-        excel.Visible = False
-        excel.DisplayAlerts = False
-        excel.ScreenUpdating = False
-        excel.EnableEvents = False
-        excel.AskToUpdateLinks = False
-        excel.AutomationSecurity = 3
-
-        print("Opening workbook...")
-
-        wb = excel.Workbooks.Open(
-            file_path,
-            UpdateLinks=0,
-            ReadOnly=False,
-            IgnoreReadOnlyRecommended=True
-        )
-
-        print("Workbook opened")
-
-        # Disable automatic recalculation
-        excel.Calculation = -4135
-
-        # Update F1
-        wb.Worksheets("Landing Page DB").Range("F1").Value = value
-        print("Updated Landing Page DB!F1")
-
-        print("\nStarting formula-only recalculation...\n")
-
-        xlCellTypeFormulas = -4123
-
-        for sheet_name in sheet_list:
-
-            try:
-                sheet = wb.Worksheets(sheet_name)
-
-                print(f"Refreshing sheet: {sheet_name}")
-
-                used = sheet.UsedRange
-
-                try:
-                    formula_cells = used.SpecialCells(xlCellTypeFormulas)
-                    formula_cells.Calculate()
-                except:
-                    print("No formula cells found")
-
-                while excel.CalculationState != 0:
-                    time.sleep(0.5)
-
-                print(f"Finished: {sheet_name}\n")
-
-            except Exception as e:
-                print(f"Error refreshing {sheet_name}: {e}")
-
-        wb.Save()
-        wb.Close(False)
-
-        print("Workbook saved and closed")
-
-    finally:
-        excel.Quit()
-        pythoncom.CoUninitialize()
-
-    print("Process completed")
-
-
-file_path = r"C:\path\file.xlsx"
-
-sheets = [
-    "Landing Page DB",
-    "Revenue Model",
-    "Dashboard"
+input_files = [
+    r"C:\data\file1.xlsx",
+    r"C:\data\file2.xlsx",
+    r"C:\data\file3.xlsx",
+    r"C:\data\file4.xlsx",
 ]
 
-refresh_selected_sheets_formula_only(file_path, "New Value", sheets)
+output_file_sheets = r"C:\data\combined_output.xlsx"
+output_file_all = r"C:\data\all_sheets_combined.xlsx"
+
+SHEETS = {
+    "P&L": 22,   # Excel row 23
+    "BS": 20,    # Excel row 21
+    "SD": 20
+}
+
+all_sheets_data = []
+header_written = False
+final_header = None
+
+with pd.ExcelWriter(output_file_sheets, engine="xlsxwriter") as writer:
+
+    for sheet_name, header_row in SHEETS.items():
+
+        print(f"\nProcessing sheet: {sheet_name}")
+
+        all_data = []
+
+        # ---- Read prefix rows from first file ----
+        first_raw = pd.read_excel(
+            input_files[0],
+            sheet_name=sheet_name,
+            header=None
+        )
+
+        prefix_df = first_raw.iloc[:header_row]
+        header = first_raw.iloc[header_row].tolist()
+
+        # Save header for second output
+        if not header_written:
+            final_header = header
+            header_written = True
+
+        # ---- Read data from all files ----
+        for file in input_files:
+            print(f"Reading {file}")
+
+            df = pd.read_excel(
+                file,
+                sheet_name=sheet_name,
+                header=header_row
+            )
+
+            df = df.dropna(how="all")
+
+            all_data.append(df)
+
+        combined_df = pd.concat(all_data, ignore_index=True)
+
+        # Save for second file
+        all_sheets_data.append(combined_df)
+
+        # ---- Write sheet-wise output ----
+        start_row = 0
+
+        prefix_df.to_excel(
+            writer,
+            sheet_name=sheet_name,
+            index=False,
+            header=False,
+            startrow=start_row
+        )
+
+        start_row += len(prefix_df)
+
+        pd.DataFrame([header]).to_excel(
+            writer,
+            sheet_name=sheet_name,
+            index=False,
+            header=False,
+            startrow=start_row
+        )
+
+        start_row += 1
+
+        combined_df.to_excel(
+            writer,
+            sheet_name=sheet_name,
+            index=False,
+            header=False,
+            startrow=start_row
+        )
+
+# ---- Second file (all sheets appended) ----
+final_df = pd.concat(all_sheets_data, ignore_index=True)
+
+with pd.ExcelWriter(output_file_all, engine="xlsxwriter") as writer:
+    final_df.to_excel(
+        writer,
+        sheet_name="Combined",
+        index=False,
+        header=True
+    )
+
+print("\n✅ Sheet-wise consolidated file created:", output_file_sheets)
+print("✅ All sheets appended into one sheet:", output_file_all)
