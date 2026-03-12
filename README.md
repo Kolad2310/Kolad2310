@@ -4,15 +4,13 @@ import pythoncom
 import time
 
 
-def refresh_heavy_excel(file_path, value):
+def refresh_workbook_sheetwise(file_path, value):
 
     pythoncom.CoInitialize()
 
-    excel = win32.DispatchEx("Excel.Application")
+    excel = win32.gencache.EnsureDispatch("Excel.Application")
 
     try:
-        print("Starting Excel")
-
         excel.Visible = False
         excel.DisplayAlerts = False
         excel.ScreenUpdating = False
@@ -21,9 +19,6 @@ def refresh_heavy_excel(file_path, value):
 
         # Disable macros
         excel.AutomationSecurity = 3
-
-        # Use constants
-        xlManual = -4135
 
         print("Opening workbook...")
 
@@ -36,34 +31,47 @@ def refresh_heavy_excel(file_path, value):
 
         print("Workbook opened")
 
-        # Now change calculation mode (after open)
-        excel.Calculation = xlManual
-
+        # Update value
         sheet = wb.Worksheets("Landing Page DB")
-
-        print("Updating F1")
-
         sheet.Range("F1").Value = value
 
-        print("Starting calculation")
+        print("Updated Landing Page DB!F1")
 
-        excel.Calculate()
+        # Set manual calculation so Excel doesn't auto calculate everything
+        excel.Calculation = -4135  # xlCalculationManual
 
-        while excel.CalculationState != 0:
-            time.sleep(1)
+        print("Starting sheet-by-sheet recalculation...\n")
 
-        print("Calculation completed")
+        for sheet in wb.Worksheets:
+
+            sheet_name = sheet.Name
+            print(f"Refreshing sheet: {sheet_name}")
+
+            sheet.Calculate()
+
+            while excel.CalculationState != 0:
+                time.sleep(0.5)
+
+            print(f"Finished: {sheet_name}\n")
+
+        print("All sheets refreshed")
 
         wb.Save()
         wb.Close(False)
+
+        print("Workbook saved and closed")
+
+    except Exception as e:
+        print("Error:", e)
 
     finally:
         excel.Quit()
         pythoncom.CoUninitialize()
 
-    print("Process completed")
+    print("Process completed successfully")
 
 
-file_path = r"C:\path\your_file.xlsx"
+# Example usage
+file_path = r"C:\path\to\your\workbook.xlsx"
 
-refresh_heavy_excel(file_path, "New String Value")
+refresh_workbook_sheetwise(file_path, "New String Value")
