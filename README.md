@@ -2,7 +2,6 @@
 import win32com.client as win32
 import pythoncom
 import time
-import os
 
 
 def refresh_heavy_excel(file_path, value):
@@ -12,9 +11,8 @@ def refresh_heavy_excel(file_path, value):
     excel = win32.DispatchEx("Excel.Application")
 
     try:
-        print("Starting Excel...")
+        print("Starting Excel")
 
-        # Run Excel silently
         excel.Visible = False
         excel.DisplayAlerts = False
         excel.ScreenUpdating = False
@@ -24,14 +22,8 @@ def refresh_heavy_excel(file_path, value):
         # Disable macros
         excel.AutomationSecurity = 3
 
-        # Manual calculation while loading
-        excel.Calculation = -4135  # xlCalculationManual
-
-        # Enable multi-threaded calculation
-        try:
-            excel.MultiThreadedCalculation.Enabled = True
-        except:
-            pass
+        # Use constants
+        xlManual = -4135
 
         print("Opening workbook...")
 
@@ -44,31 +36,26 @@ def refresh_heavy_excel(file_path, value):
 
         print("Workbook opened")
 
+        # Now change calculation mode (after open)
+        excel.Calculation = xlManual
+
         sheet = wb.Worksheets("Landing Page DB")
 
-        print("Updating cell F1")
+        print("Updating F1")
 
         sheet.Range("F1").Value = value
 
-        print("Triggering dependency recalculation...")
+        print("Starting calculation")
 
-        # Faster than full rebuild
         excel.Calculate()
 
-        # Wait for calculation to complete
         while excel.CalculationState != 0:
             time.sleep(1)
 
         print("Calculation completed")
 
         wb.Save()
-
-        print("Workbook saved")
-
         wb.Close(False)
-
-    except Exception as e:
-        print("Error:", e)
 
     finally:
         excel.Quit()
@@ -77,7 +64,6 @@ def refresh_heavy_excel(file_path, value):
     print("Process completed")
 
 
-# Example usage
 file_path = r"C:\path\your_file.xlsx"
 
-refresh_heavy_excel(file_path, "New Value")
+refresh_heavy_excel(file_path, "New String Value")
