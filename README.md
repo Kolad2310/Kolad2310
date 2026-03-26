@@ -9,7 +9,7 @@ from openpyxl.styles import PatternFill
 # -----------------------------
 # CONFIG
 # -----------------------------
-HEADER_ROW = 6
+HEADER_ROW = 6  # header at row 7
 
 FILL_BLUE = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
 FILL_GREEN = PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
@@ -22,23 +22,37 @@ password_cache = {}
 # FILE FETCH
 # -----------------------------
 def get_excel_files(folder):
-    excel_files = []
-    for root_dir, _, files in os.walk(folder):
-        for f in files:
+    files = []
+    for root_dir, _, f_list in os.walk(folder):
+        for f in f_list:
             if f.lower().endswith((".xls", ".xlsx", ".xlsb", ".xlsm")) and not f.startswith("~$"):
-                excel_files.append(os.path.join(root_dir, f))
-    return excel_files
+                files.append(os.path.join(root_dir, f))
+    return files
 
 # -----------------------------
 # PASSWORD HANDLING
 # -----------------------------
 def ask_password(file):
-    return simpledialog.askstring(
-        "Password Required",
-        f"Enter password for:\n{os.path.basename(file)}",
-        show="*"
-    )
+    return simpledialog.askstring("Password", f"Enter password for:\n{os.path.basename(file)}", show="*")
 
+# -----------------------------
+# READ B5 & E5 (CRITICAL FIX)
+# -----------------------------
+def read_metadata_cells(file, sheet):
+    try:
+        temp = pd.read_excel(file, sheet_name=sheet, header=None, nrows=6)
+
+        product_code = temp.iloc[4, 1]  # B5
+        currency = temp.iloc[4, 4]      # E5
+
+        return product_code, currency
+
+    except:
+        return None, None
+
+# -----------------------------
+# SAFE READ
+# -----------------------------
 def read_excel_safe(file, sheet):
     try:
         if file.lower().endswith(".xlsb"):
@@ -52,14 +66,8 @@ def read_excel_safe(file, sheet):
             password_cache[file] = pwd
 
         try:
-            return pd.read_excel(
-                file,
-                sheet_name=sheet,
-                header=HEADER_ROW,
-                engine="openpyxl"
-            )
-        except Exception as e:
-            messagebox.showerror("Error", f"Cannot open {file}\n{str(e)}")
+            return pd.read_excel(file, sheet_name=sheet, header=HEADER_ROW, engine="openpyxl")
+        except:
             return None
 
 # -----------------------------
@@ -70,19 +78,15 @@ def auto_adjust_width(ws):
         max_len = 0
         col_letter = col[0].column_letter
         for cell in col:
-            try:
-                if cell.value:
-                    max_len = max(max_len, len(str(cell.value)))
-            except:
-                pass
+            if cell.value:
+                max_len = max(max_len, len(str(cell.value)))
         ws.column_dimensions[col_letter].width = max_len + 2
 
 def color_recon_sheet(ws):
-    header = [cell.value for cell in ws[1]]
+    header = [c.value for c in ws[1]]
 
-    for col_idx, col_name in enumerate(header, start=1):
+    for col_idx, col_name in enumerate(header, 1):
         fill = None
-
         if col_name == "Input Total":
             fill = FILL_BLUE
         elif col_name == "UKMR Submission":
@@ -102,21 +106,24 @@ def color_recon_sheet(ws):
 # -----------------------------
 def process_files(folder, selection_dict):
     try:
-        clean_data = []
-        exception_data = []
-        recon_records = []
+        clean_data, exception_data, recon_records = [], [], []
         header_reference = None
 
         usd_rate = simpledialog.askfloat("USD Rate", "Enter USD rate (1 GBP = ? USD):")
 
         for file, sheets in selection_dict.items():
             for sheet in sheets:
+
+                # 🔥 READ METADATA FIRST
+                product_code_b5, currency_e5 = read_metadata_cells(file, sheet)
+
                 df = read_excel_safe(file, sheet)
                 if df is None or df.empty:
                     continue
 
                 df = df.dropna(how="all")
 
+                # HEADER CHECK
                 cols = [c.strip().lower() for c in df.columns]
                 if header_reference is None:
                     header_reference = cols
@@ -124,23 +131,27 @@ def process_files(folder, selection_dict):
                     messagebox.showerror("Header Error", f"{os.path.basename(file)} - {sheet}")
                     return
 
-                currency = df.iloc[3, 4] if df.shape[0] > 3 else None
-                if str(currency).strip().upper() == "USD" and usd_rate:
+                # ---------------- USD ----------------
+                if str(currency_e5).strip().upper() == "USD" and usd_rate:
                     if "Amount" in df.columns:
                         df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
                         df["Amount"] *= usd_rate
 
+                # ---------------- PRODUCT CODE ----------------
                 if "Product code" in df.columns:
                     mask = df["Product code"].isna() | (df["Product code"].astype(str).str.strip() == "")
-                    if mask.any():
-                        c4 = df.iloc[3, 2] if df.shape[0] > 3 else None
-                        if pd.isna(c4) or str(c4).strip() == "":
-                            c4 = simpledialog.askstring(
-                                "Product Code",
-                                f"{os.path.basename(file)} - {sheet}"
-                            )
-                        df.loc[mask, "Product code"] = c4
 
+                    c4 = product_code_b5
+
+                    if pd.isna(c4) or str(c4).strip() == "":
+                        c4 = simpledialog.askstring(
+                            "Product Code",
+                            f"{os.path.basename(file)} - {sheet}"
+                        )
+
+                    df.loc[mask, "Product code"] = c4
+
+                # ---------------- EXCEPTIONS ----------------
                 df["Exception_Reason"] = ""
 
                 if "Amount" in df.columns:
@@ -154,13 +165,14 @@ def process_files(folder, selection_dict):
                 exceptions = df[df["Exception_Reason"] != ""].copy()
                 clean = df[df["Exception_Reason"] == ""].copy()
 
-                for d in [exceptions, clean]:
+                for d in [clean, exceptions]:
                     d["Source File"] = os.path.basename(file)
                     d["Source Sheet"] = sheet
 
                 clean_data.append(clean)
                 exception_data.append(exceptions)
 
+                # ---------------- RECON ----------------
                 if "Product code" in df.columns and "Amount" in df.columns:
                     grp = df.groupby("Product code")["Amount"].sum().reset_index()
 
@@ -210,7 +222,7 @@ def process_files(folder, selection_dict):
         messagebox.showerror("Error", str(e))
 
 # -----------------------------
-# GUI (UPDATED)
+# GUI
 # -----------------------------
 def browse_folder():
     folder = filedialog.askdirectory()
@@ -225,14 +237,14 @@ def browse_folder():
 
     sheet_window = tk.Toplevel(root)
     sheet_window.title("Select Sheets")
+    sheet_window.geometry("1200x600")
 
     canvas = tk.Canvas(sheet_window)
-    scrollbar = tk.Scrollbar(sheet_window, orient="vertical", command=canvas.yview)
-    scroll_frame = tk.Frame(canvas)
+    scrollbar = tk.Scrollbar(sheet_window, command=canvas.yview)
+    frame = tk.Frame(canvas)
 
-    scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-
-    canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+    frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.create_window((0, 0), window=frame, anchor="nw")
     canvas.configure(yscrollcommand=scrollbar.set)
 
     canvas.pack(side="left", fill="both", expand=True)
@@ -248,30 +260,22 @@ def browse_folder():
 
         selection_vars[file] = {}
 
-        row_frame = tk.Frame(scroll_frame)
-        row_frame.pack(fill="x", pady=5)
+        row = tk.Frame(frame)
+        row.pack(fill="x", pady=5)
 
-        tk.Label(row_frame, text=os.path.basename(file), width=30, anchor="w").pack(side="left")
+        tk.Label(row, text=os.path.basename(file), width=30, anchor="w").pack(side="left")
 
         for sheet in sheets:
-            var = tk.BooleanVar()
-
-            # ONLY Income Sub. selected
-            if sheet.strip().lower() == "income sub.":
-                var.set(True)
-            else:
-                var.set(False)
-
-            tk.Checkbutton(row_frame, text=sheet, variable=var).pack(side="left", padx=5)
+            var = tk.BooleanVar(value=(sheet.lower() == "income sub."))
+            tk.Checkbutton(row, text=sheet, variable=var).pack(side="left")
             selection_vars[file][sheet] = var
 
     def submit():
-        selection_dict = {}
-
-        for file, sheets in selection_vars.items():
-            selected = [s for s, v in sheets.items() if v.get()]
-            if selected:
-                selection_dict[file] = selected
+        selection_dict = {
+            f: [s for s, v in sheets.items() if v.get()]
+            for f, sheets in selection_vars.items()
+            if any(v.get() for v in sheets.values())
+        }
 
         if not selection_dict:
             messagebox.showerror("Error", "Select at least one sheet")
@@ -286,10 +290,10 @@ def browse_folder():
 # RUN
 # -----------------------------
 root = tk.Tk()
-root.title("Excel Product Code Cleaner")
-root.geometry("400x200")
+root.title("Excel Processor")
+root.geometry("500x250")
 
-tk.Label(root, text="Select Folder Containing Excel Files").pack(pady=20)
+tk.Label(root, text="Select Folder").pack(pady=20)
 tk.Button(root, text="Browse Folder", command=browse_folder).pack()
 
 root.mainloop()
