@@ -2,14 +2,16 @@
 import os
 import pandas as pd
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
 # -----------------------------
 # CONFIG
 # -----------------------------
-HEADER_ROW = 6  # header at row 7
+HEADER_ROW = 6
+
+PRODUCT_CODE_OPTIONS = ["MD001", "MD002", "MD003", "MD004"]
 
 FILL_BLUE = PatternFill(start_color="ADD8E6", end_color="ADD8E6", fill_type="solid")
 FILL_GREEN = PatternFill(start_color="90EE90", end_color="90EE90", fill_type="solid")
@@ -17,6 +19,7 @@ FILL_ORANGE = PatternFill(start_color="FFD580", end_color="FFD580", fill_type="s
 FILL_GREY = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
 
 password_cache = {}
+product_code_cache = {}
 
 # -----------------------------
 # FILE FETCH
@@ -30,23 +33,42 @@ def get_excel_files(folder):
     return files
 
 # -----------------------------
-# PASSWORD HANDLING
+# PASSWORD
 # -----------------------------
 def ask_password(file):
     return simpledialog.askstring("Password", f"Enter password for:\n{os.path.basename(file)}", show="*")
 
 # -----------------------------
-# READ B5 & E5 (CRITICAL FIX)
+# DROPDOWN
+# -----------------------------
+def ask_product_code_dropdown(file):
+    popup = tk.Toplevel(root)
+    popup.title("Select Product Code")
+    popup.geometry("350x150")
+    popup.grab_set()
+
+    tk.Label(popup, text=f"Select Product Code for:\n{os.path.basename(file)}").pack(pady=10)
+
+    selected = tk.StringVar()
+    combo = ttk.Combobox(popup, values=PRODUCT_CODE_OPTIONS, textvariable=selected, state="readonly")
+    combo.pack(pady=5)
+    combo.current(0)
+
+    def submit():
+        popup.destroy()
+
+    tk.Button(popup, text="Submit", command=submit).pack(pady=10)
+    popup.wait_window()
+
+    return selected.get()
+
+# -----------------------------
+# READ B5 & E5
 # -----------------------------
 def read_metadata_cells(file, sheet):
     try:
         temp = pd.read_excel(file, sheet_name=sheet, header=None, nrows=6)
-
-        product_code = temp.iloc[4, 1]  # B5
-        currency = temp.iloc[4, 4]      # E5
-
-        return product_code, currency
-
+        return temp.iloc[4, 1], temp.iloc[4, 4]  # B5, E5
     except:
         return None, None
 
@@ -58,13 +80,12 @@ def read_excel_safe(file, sheet):
         if file.lower().endswith(".xlsb"):
             return pd.read_excel(file, sheet_name=sheet, header=HEADER_ROW, engine="pyxlsb")
         return pd.read_excel(file, sheet_name=sheet, header=HEADER_ROW)
-    except Exception:
+    except:
         if file not in password_cache:
             pwd = ask_password(file)
             if not pwd:
                 return None
             password_cache[file] = pwd
-
         try:
             return pd.read_excel(file, sheet_name=sheet, header=HEADER_ROW, engine="openpyxl")
         except:
@@ -76,15 +97,13 @@ def read_excel_safe(file, sheet):
 def auto_adjust_width(ws):
     for col in ws.columns:
         max_len = 0
-        col_letter = col[0].column_letter
         for cell in col:
             if cell.value:
                 max_len = max(max_len, len(str(cell.value)))
-        ws.column_dimensions[col_letter].width = max_len + 2
+        ws.column_dimensions[col[0].column_letter].width = max_len + 2
 
 def color_recon_sheet(ws):
     header = [c.value for c in ws[1]]
-
     for col_idx, col_name in enumerate(header, 1):
         fill = None
         if col_name == "Input Total":
@@ -109,12 +128,12 @@ def process_files(folder, selection_dict):
         clean_data, exception_data, recon_records = [], [], []
         header_reference = None
 
-        usd_rate = simpledialog.askfloat("USD Rate", "Enter USD rate (1 GBP = ? USD):")
+        usd_rate = simpledialog.askfloat("USD Rate", "Enter USD rate:")
 
         for file, sheets in selection_dict.items():
             for sheet in sheets:
 
-                # 🔥 READ METADATA FIRST
+                # 🔥 Read B5 & E5
                 product_code_b5, currency_e5 = read_metadata_cells(file, sheet)
 
                 df = read_excel_safe(file, sheet)
@@ -123,7 +142,6 @@ def process_files(folder, selection_dict):
 
                 df = df.dropna(how="all")
 
-                # HEADER CHECK
                 cols = [c.strip().lower() for c in df.columns]
                 if header_reference is None:
                     header_reference = cols
@@ -131,31 +149,35 @@ def process_files(folder, selection_dict):
                     messagebox.showerror("Header Error", f"{os.path.basename(file)} - {sheet}")
                     return
 
-                # ---------------- USD ----------------
+                # USD conversion
                 if str(currency_e5).strip().upper() == "USD" and usd_rate:
-                    if "Amount" in df.columns:
-                        df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
-                        df["Amount"] *= usd_rate
+                    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
+                    df["Amount"] *= usd_rate
 
-                # ---------------- PRODUCT CODE ----------------
+                # ---------------- PRODUCT CODE FINAL LOGIC ----------------
                 if "Product code" in df.columns:
-                    mask = df["Product code"].isna() | (df["Product code"].astype(str).str.strip() == "")
+                    df["Product code"] = df["Product code"].astype(str).str.strip()
 
-                    c4 = product_code_b5
+                    invalid_mask = ~df["Product code"].str.startswith("MD", na=False)
 
-                    if pd.isna(c4) or str(c4).strip() == "":
-                        c4 = simpledialog.askstring(
-                            "Product Code",
-                            f"{os.path.basename(file)} - {sheet}"
-                        )
+                    if invalid_mask.any():
 
-                    df.loc[mask, "Product code"] = c4
+                        # CASE 1: B5 has value → use it
+                        if pd.notna(product_code_b5) and str(product_code_b5).strip() != "":
+                            replacement_code = str(product_code_b5).strip()
+
+                        # CASE 2: B5 empty → dropdown
+                        else:
+                            if file not in product_code_cache:
+                                product_code_cache[file] = ask_product_code_dropdown(file)
+                            replacement_code = product_code_cache[file]
+
+                        df.loc[invalid_mask, "Product code"] = replacement_code
 
                 # ---------------- EXCEPTIONS ----------------
                 df["Exception_Reason"] = ""
 
-                if "Amount" in df.columns:
-                    df.loc[df["Amount"] == 0, "Exception_Reason"] += "Zero Amount; "
+                df.loc[df["Amount"] == 0, "Exception_Reason"] += "Zero Amount; "
 
                 if "Customer No." in df.columns:
                     cust = df["Customer No."].astype(str).str.strip()
@@ -173,24 +195,23 @@ def process_files(folder, selection_dict):
                 exception_data.append(exceptions)
 
                 # ---------------- RECON ----------------
-                if "Product code" in df.columns and "Amount" in df.columns:
-                    grp = df.groupby("Product code")["Amount"].sum().reset_index()
+                grp = df.groupby("Product code")["Amount"].sum().reset_index()
 
-                    for _, row in grp.iterrows():
-                        product = row["Product code"]
-                        input_total = row["Amount"]
+                for _, row in grp.iterrows():
+                    product = row["Product code"]
+                    input_total = row["Amount"]
 
-                        clean_total = clean[clean["Product code"] == product]["Amount"].sum()
-                        exc_total = exceptions[exceptions["Product code"] == product]["Amount"].sum()
+                    clean_total = clean[clean["Product code"] == product]["Amount"].sum()
+                    exc_total = exceptions[exceptions["Product code"] == product]["Amount"].sum()
 
-                        recon_records.append({
-                            "File Name": os.path.basename(file),
-                            "Product code": product,
-                            "Input Total": input_total,
-                            "UKMR Submission": clean_total,
-                            "Exception Total": exc_total,
-                            "Check (Should be 0)": input_total - (clean_total + exc_total)
-                        })
+                    recon_records.append({
+                        "File Name": os.path.basename(file),
+                        "Product code": product,
+                        "Input Total": input_total,
+                        "UKMR Submission": clean_total,
+                        "Exception Total": exc_total,
+                        "Check (Should be 0)": input_total - (clean_total + exc_total)
+                    })
 
         if not clean_data:
             messagebox.showwarning("No Data", "No valid data found")
@@ -222,7 +243,7 @@ def process_files(folder, selection_dict):
         messagebox.showerror("Error", str(e))
 
 # -----------------------------
-# GUI
+# GUI (same as before)
 # -----------------------------
 def browse_folder():
     folder = filedialog.askdirectory()
