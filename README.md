@@ -14,6 +14,8 @@ PRODUCT_CODE_OPTIONS = ["MD001", "MD002", "MD003", "MD004"]
 VAL_TYPE_OPTIONS = ["Type1", "Type2", "Type3"]
 
 password_cache = {}
+product_code_cache = {}
+type_cache = {}
 
 # ---------------- PASSWORD ----------------
 def decrypt_file(file):
@@ -120,7 +122,6 @@ def process_files(folder, selection):
     for file, sheets in selection.items():
 
         product_choice = None
-        type_choice = None
 
         for sheet in sheets:
 
@@ -140,45 +141,54 @@ def process_files(folder, selection):
             if str(e5).strip().upper() == "USD":
                 df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce") / usd_rate
 
-            # ---------------- PRODUCT ----------------
-            product_col = None
-            for col in df.columns:
-                if col.lower() == "product":
-                    product_col = col
-                    break
+            # ---------------- PRODUCT CODE ----------------
+            if "Product code" in df.columns:
 
-            if product_col:
-                df[product_col] = df[product_col].fillna("").astype(str).str.strip()
+                df["Product code"] = (
+                    df["Product code"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                )
 
-                invalid = ~df[product_col].str.upper().str.startswith("MD")
+                invalid_mask = ~df["Product code"].str.upper().str.startswith("MD")
 
-                if invalid.any():
+                if invalid_mask.any():
+
                     if pd.notna(b5) and str(b5).strip():
                         replacement = str(b5).strip()
                     else:
-                        if not product_choice:
-                            product_choice = dropdown_popup("Select Product Code", PRODUCT_CODE_OPTIONS, file)
-                        replacement = product_choice
+                        if file not in product_code_cache:
+                            product_code_cache[file] = dropdown_popup(
+                                "Select Product Code",
+                                PRODUCT_CODE_OPTIONS,
+                                file
+                            )
+                        replacement = product_code_cache[file]
 
-                    df.loc[invalid, product_col] = replacement
+                    df.loc[invalid_mask, "Product code"] = replacement
 
             # ---------------- TYPE ----------------
-            type_col = None
-            for col in df.columns:
-                if col.lower() == "type":
-                    type_col = col
-                    break
+            if "Type" in df.columns:
 
-            if type_col:
-                df[type_col] = df[type_col].fillna("").astype(str).str.strip()
+                df["Type"] = (
+                    df["Type"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                )
 
-                invalid_type = ~df[type_col].isin(VAL_TYPE_OPTIONS)
+                # ONLY if completely empty
+                if df["Type"].eq("").all():
 
-                if invalid_type.any():
-                    if not type_choice:
-                        type_choice = dropdown_popup("Select Type", VAL_TYPE_OPTIONS, file)
+                    if file not in type_cache:
+                        type_cache[file] = dropdown_popup(
+                            "Select Type",
+                            VAL_TYPE_OPTIONS,
+                            file
+                        )
 
-                    df.loc[invalid_type, type_col] = type_choice
+                    df["Type"] = type_cache[file]
 
             # ---------------- EXCEPTION ----------------
             df["Exception"] = ""
@@ -192,30 +202,30 @@ def process_files(folder, selection):
             exc_all.append(exc)
 
             # ---------------- RECON ----------------
-            if product_col and "Amount" in df.columns:
+            if "Product code" in df.columns and "Amount" in df.columns:
 
-                grp = df.groupby(product_col)["Amount"].sum().reset_index()
+                grp = df.groupby("Product code")["Amount"].sum().reset_index()
 
                 for _, r in grp.iterrows():
 
-                    product_val = r[product_col]
+                    product_val = r["Product code"]
 
-                    clean_total = clean[clean[product_col] == product_val]["Amount"].sum() if product_col in clean.columns else 0
-                    exc_total = exc[exc[product_col] == product_val]["Amount"].sum() if product_col in exc.columns else 0
+                    clean_total = clean[clean["Product code"] == product_val]["Amount"].sum()
+                    exc_total = exc[exc["Product code"] == product_val]["Amount"].sum()
 
                     recon.append({
-                        "File": os.path.basename(file),
-                        "Product": product_val,
+                        "File Name": os.path.basename(file),
+                        "Product code": product_val,
                         "Input Total": r["Amount"],
                         "UKMR Submission": clean_total,
                         "Exception Total": exc_total,
-                        "Check": r["Amount"] - (clean_total + exc_total)
+                        "Check (Should be 0)": r["Amount"] - (clean_total + exc_total)
                     })
 
-    output = os.path.join(folder, "Output.xlsx")
+    output = os.path.join(folder, "Output_for_SME.xlsx")
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        pd.concat(clean_all).to_excel(writer, "Clean", index=False)
+        pd.concat(clean_all).to_excel(writer, "Clean_Data", index=False)
         pd.concat(exc_all).to_excel(writer, "Exceptions", index=False)
         pd.DataFrame(recon).to_excel(writer, "Reconciliation", index=False)
 
@@ -252,7 +262,7 @@ def browse():
         selection[file] = {}
 
         for sheet in xl.sheet_names:
-            var = tk.BooleanVar(value=(sheet.lower()=="income sub."))
+            var = tk.BooleanVar(value=(sheet.lower() == "income sub."))
             tk.Checkbutton(row, text=sheet, variable=var).pack(side="left")
             selection[file][sheet] = var
 
