@@ -5,6 +5,8 @@ import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 import msoffcrypto
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 
 HEADER_ROW = 6
 PRODUCT_CODE_OPTIONS = ["MD001", "MD002", "MD003", "MD004"]
@@ -82,6 +84,30 @@ def dropdown_popup(title, options, file, sheet):
 
     return var.get()
 
+# ---------------- RECON FORMAT FIX ----------------
+def format_recon(path):
+    wb = load_workbook(path)
+    ws = wb["Reconciliation"]
+
+    header = [cell.value for cell in ws[1]]
+
+    colors = {
+        "Input Total": "ADD8E6",
+        "UKMR Submission": "90EE90",
+        "Exception Total": "FFD580",
+        "Check": "D3D3D3"
+    }
+
+    for col_idx, col_name in enumerate(header, 1):
+        for key in colors:
+            if key.lower() in str(col_name).lower():
+                fill = PatternFill(start_color=colors[key], end_color=colors[key], fill_type="solid")
+
+                for row in range(2, ws.max_row + 1):
+                    ws.cell(row=row, column=col_idx).fill = fill
+
+    wb.save(path)
+
 # ---------------- MAIN ----------------
 def process_files(folder, selection):
     usd_rate = simpledialog.askfloat("USD Rate", "Enter USD → GBP rate:")
@@ -98,12 +124,10 @@ def process_files(folder, selection):
             if df is None or df.empty:
                 continue
 
-            # 🔥 CLEAN DATA
             df.columns = df.columns.astype(str).str.strip()
-            df = df.dropna(how="all")         # remove empty rows
-            df = df.iloc[:, :5]               # only first 5 columns
+            df = df.dropna(how="all")
+            df = df.iloc[:, :5]
 
-            # add metadata
             df["Source File"] = os.path.basename(file)
             df["Source Sheet"] = sheet
 
@@ -111,7 +135,7 @@ def process_files(folder, selection):
             if str(e5).strip().upper() == "USD":
                 df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce") / usd_rate
 
-            # ---------------- PRODUCT CODE ----------------
+            # PRODUCT
             if "Product code" in df.columns:
 
                 df["Product code"] = df["Product code"].fillna("").astype(str).str.strip()
@@ -124,39 +148,22 @@ def process_files(folder, selection):
 
                 if invalid.any():
 
-                    if (
-                        pd.notna(b5)
-                        and str(b5).strip().upper().startswith("MD")
-                    ):
+                    if pd.notna(b5) and str(b5).strip().upper().startswith("MD"):
                         replacement = str(b5).strip()
-
                     else:
-                        replacement = dropdown_popup(
-                            "Select Product Code",
-                            PRODUCT_CODE_OPTIONS,
-                            file,
-                            sheet
-                        )
+                        replacement = dropdown_popup("Select Product Code", PRODUCT_CODE_OPTIONS, file, sheet)
 
                     df.loc[invalid, "Product code"] = replacement
 
-            # ---------------- TYPE ----------------
+            # TYPE
             if "Type" in df.columns:
 
                 df["Type"] = df["Type"].fillna("").astype(str).str.strip()
 
                 if df["Type"].eq("").all():
+                    df["Type"] = dropdown_popup("Select Type", VAL_TYPE_OPTIONS, file, sheet)
 
-                    replacement = dropdown_popup(
-                        "Select Type",
-                        VAL_TYPE_OPTIONS,
-                        file,
-                        sheet
-                    )
-
-                    df["Type"] = replacement
-
-            # ---------------- EXCEPTION ----------------
+            # EXCEPTION
             df["Exception"] = ""
 
             if "Customer No." in df.columns:
@@ -164,6 +171,8 @@ def process_files(folder, selection):
 
                 invalid_cust = (
                     cust.eq("") |
+                    cust.eq("0") |
+                    cust.eq("0.0") |
                     cust.str.lower().eq("none") |
                     cust.str.match(r"^[A-Za-z]+$")
                 )
@@ -179,7 +188,7 @@ def process_files(folder, selection):
             clean_all.append(clean)
             exc_all.append(exc)
 
-            # ---------------- RECON ----------------
+            # RECON
             if "Product code" in df.columns and "Amount" in df.columns:
 
                 input_grp = df.groupby("Product code")["Amount"].sum().reset_index()
@@ -215,6 +224,9 @@ def process_files(folder, selection):
         pd.concat(clean_all).to_excel(writer, "Clean_Data", index=False)
         pd.concat(exc_all).to_excel(writer, "Exceptions", index=False)
         pd.DataFrame(recon).to_excel(writer, "Reconciliation", index=False)
+
+    # 🔥 APPLY COLORS AFTER SAVE
+    format_recon(output)
 
     messagebox.showinfo("Done", f"Saved at {output}")
 
