@@ -58,7 +58,7 @@ def read_excel_safe(file, sheet):
 def read_metadata(file, sheet):
     try:
         temp = pd.read_excel(file, sheet_name=sheet, header=None, nrows=6)
-        return temp.iloc[4, 1], temp.iloc[4, 4]  # B5, E5
+        return temp.iloc[4, 1], temp.iloc[4, 4]
     except:
         dec = decrypt_file(file)
         if dec:
@@ -106,11 +106,6 @@ def format_recon(path):
                 for r in range(2, ws.max_row + 1):
                     ws.cell(row=r, column=col_idx).fill = fill
 
-    # auto width
-    for col in ws.columns:
-        max_len = max(len(str(c.value)) if c.value else 0 for c in col)
-        ws.column_dimensions[col[0].column_letter].width = max_len + 2
-
     wb.save(path)
 
 # ---------------- MAIN ----------------
@@ -134,16 +129,25 @@ def process_files(folder, selection):
             df.columns = df.columns.astype(str).str.strip()
             df = df.dropna(axis=1, how="all")
 
-            # USD conversion
+            # USD
             if str(e5).strip().upper() == "USD":
                 df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce") / usd_rate
 
-            # ---------------- PRODUCT ----------------
+            # ---------------- PRODUCT CODE (FIXED) ----------------
             if "Product code" in df.columns:
 
-                df["Product code"] = df["Product code"].fillna("").astype(str).str.strip()
+                df["Product code"] = (
+                    df["Product code"]
+                    .fillna("")
+                    .astype(str)
+                    .str.strip()
+                )
 
-                invalid = ~df["Product code"].str.upper().str.startswith("MD")
+                invalid = (
+                    df["Product code"].eq("") |
+                    df["Product code"].eq("0") |
+                    ~df["Product code"].str.upper().str.startswith("MD")
+                )
 
                 if invalid.any():
 
@@ -179,7 +183,6 @@ def process_files(folder, selection):
             # ---------------- EXCEPTION ----------------
             df["Exception"] = ""
 
-            # customer fix
             if "Customer No." in df.columns:
                 cust = df["Customer No."].fillna("").astype(str).str.strip()
 
@@ -194,14 +197,13 @@ def process_files(folder, selection):
             if "Amount" in df.columns:
                 df.loc[df["Amount"] == 0, "Exception"] += "Zero Amount; "
 
-            # split
             clean = df[df["Exception"].str.strip() == ""].copy()
             exc = df[df["Exception"].str.strip() != ""].copy()
 
             clean_all.append(clean)
             exc_all.append(exc)
 
-            # ---------------- RECON (FIXED) ----------------
+            # ---------------- RECON ----------------
             if "Product code" in df.columns and "Amount" in df.columns:
 
                 input_grp = df.groupby("Product code")["Amount"].sum().reset_index()
