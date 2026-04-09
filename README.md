@@ -56,7 +56,7 @@ def read_excel_safe(file, sheet):
 def read_metadata(file, sheet):
     try:
         temp = pd.read_excel(file, sheet_name=sheet, header=None, nrows=6)
-        return temp.iloc[4, 1], temp.iloc[4, 4]
+        return temp.iloc[4, 1], temp.iloc[4, 4]  # B5, E5
     except:
         dec = decrypt_file(file)
         if dec:
@@ -99,10 +99,15 @@ def format_recon(path):
 
     for col_idx, col_name in enumerate(headers, 1):
         for key, color in colors.items():
-            if key in str(col_name):
+            if key.lower() in str(col_name).lower():
                 fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
                 for r in range(2, ws.max_row + 1):
                     ws.cell(row=r, column=col_idx).fill = fill
+
+    # auto width
+    for col in ws.columns:
+        max_len = max(len(str(c.value)) if c.value else 0 for c in col)
+        ws.column_dimensions[col[0].column_letter].width = max_len + 2
 
     wb.save(path)
 
@@ -125,43 +130,60 @@ def process_files(folder, selection):
             if df is None or df.empty:
                 continue
 
-            # 🔥 DROP ALL-NA COLUMNS
+            # normalize columns
+            df.columns = df.columns.astype(str).str.strip()
+
+            # drop empty columns
             df = df.dropna(axis=1, how="all")
 
             # USD conversion
             if str(e5).strip().upper() == "USD":
                 df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce") / usd_rate
 
-            # PRODUCT
-            if "Product" in df.columns:
-                df["Product"] = df["Product"].fillna("").astype(str).str.strip()
+            # ---------------- PRODUCT ----------------
+            product_col = None
+            for col in df.columns:
+                if col.lower() == "product":
+                    product_col = col
+                    break
 
-                invalid = ~df["Product"].str.upper().str.startswith("MD")
+            if product_col:
+                df[product_col] = df[product_col].fillna("").astype(str).str.strip()
+
+                invalid = ~df[product_col].str.upper().str.startswith("MD")
 
                 if invalid.any():
                     if pd.notna(b5) and str(b5).strip():
-                        rep = str(b5).strip()
+                        replacement = str(b5).strip()
                     else:
                         if not product_choice:
                             product_choice = dropdown_popup("Select Product Code", PRODUCT_CODE_OPTIONS, file)
-                        rep = product_choice
+                        replacement = product_choice
 
-                    df.loc[invalid, "Product"] = rep
+                    df.loc[invalid, product_col] = replacement
 
-            # TYPE
-            if "Type" in df.columns:
-                df["Type"] = df["Type"].fillna("").astype(str).str.strip()
+            # ---------------- TYPE ----------------
+            type_col = None
+            for col in df.columns:
+                if col.lower() == "type":
+                    type_col = col
+                    break
 
-                invalid = ~df["Type"].isin(VAL_TYPE_OPTIONS)
+            if type_col:
+                df[type_col] = df[type_col].fillna("").astype(str).str.strip()
 
-                if invalid.any():
+                invalid_type = ~df[type_col].isin(VAL_TYPE_OPTIONS)
+
+                if invalid_type.any():
                     if not type_choice:
                         type_choice = dropdown_popup("Select Type", VAL_TYPE_OPTIONS, file)
-                    df.loc[invalid, "Type"] = type_choice
 
-            # EXCEPTION
+                    df.loc[invalid_type, type_col] = type_choice
+
+            # ---------------- EXCEPTION ----------------
             df["Exception"] = ""
-            df.loc[df["Amount"] == 0, "Exception"] = "Zero Amount"
+            if "Amount" in df.columns:
+                df.loc[df["Amount"] == 0, "Exception"] = "Zero Amount"
 
             clean = df[df["Exception"] == ""]
             exc = df[df["Exception"] != ""]
@@ -169,17 +191,26 @@ def process_files(folder, selection):
             clean_all.append(clean)
             exc_all.append(exc)
 
-            grp = df.groupby("Product")["Amount"].sum().reset_index()
+            # ---------------- RECON ----------------
+            if product_col and "Amount" in df.columns:
 
-            for _, r in grp.iterrows():
-                recon.append({
-                    "File": os.path.basename(file),
-                    "Product": r["Product"],
-                    "Input Total": r["Amount"],
-                    "UKMR Submission": clean[clean["Product"] == r["Product"]]["Amount"].sum(),
-                    "Exception Total": exc[exc["Product"] == r["Product"]]["Amount"].sum(),
-                    "Check": 0
-                })
+                grp = df.groupby(product_col)["Amount"].sum().reset_index()
+
+                for _, r in grp.iterrows():
+
+                    product_val = r[product_col]
+
+                    clean_total = clean[clean[product_col] == product_val]["Amount"].sum() if product_col in clean.columns else 0
+                    exc_total = exc[exc[product_col] == product_val]["Amount"].sum() if product_col in exc.columns else 0
+
+                    recon.append({
+                        "File": os.path.basename(file),
+                        "Product": product_val,
+                        "Input Total": r["Amount"],
+                        "UKMR Submission": clean_total,
+                        "Exception Total": exc_total,
+                        "Check": r["Amount"] - (clean_total + exc_total)
+                    })
 
     output = os.path.join(folder, "Output.xlsx")
 
@@ -198,7 +229,7 @@ def browse():
     if not folder:
         return
 
-    root.withdraw()  # 🔥 CLOSE FIRST WINDOW
+    root.withdraw()
 
     files = [os.path.join(folder, f) for f in os.listdir(folder)
              if f.lower().endswith((".xlsx",".xls",".xlsb",".xlsm"))]
