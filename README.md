@@ -1,4 +1,5 @@
 ```
+
 import os
 import io
 import pandas as pd
@@ -116,8 +117,6 @@ def process_files(folder, selection):
 
     for file, sheets in selection.items():
 
-        product_choice = None
-
         for sheet in sheets:
 
             b5, e5 = read_metadata(file, sheet)
@@ -133,27 +132,22 @@ def process_files(folder, selection):
             if str(e5).strip().upper() == "USD":
                 df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce") / usd_rate
 
-            # ---------------- PRODUCT CODE (FIXED) ----------------
+            # ---------------- PRODUCT CODE (FORCED FIX) ----------------
             if "Product code" in df.columns:
 
-                df["Product code"] = (
-                    df["Product code"]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                )
+                df["Product code"] = df["Product code"].fillna("").astype(str).str.strip()
 
-                invalid = (
+                invalid_mask = (
                     df["Product code"].eq("") |
                     df["Product code"].eq("0") |
+                    df["Product code"].eq("0.0") |
                     ~df["Product code"].str.upper().str.startswith("MD")
                 )
 
-                if invalid.any():
+                if invalid_mask.sum() > 0:
 
-                    if pd.notna(b5) and str(b5).strip():
-                        replacement = str(b5).strip()
-                    else:
+                    # 🔥 FORCE dropdown if B5 empty
+                    if pd.isna(b5) or str(b5).strip() == "":
                         if file not in product_code_cache:
                             product_code_cache[file] = dropdown_popup(
                                 "Select Product Code",
@@ -161,8 +155,10 @@ def process_files(folder, selection):
                                 file
                             )
                         replacement = product_code_cache[file]
+                    else:
+                        replacement = str(b5).strip()
 
-                    df.loc[invalid, "Product code"] = replacement
+                    df.loc[invalid_mask, "Product code"] = replacement
 
             # ---------------- TYPE ----------------
             if "Type" in df.columns:
@@ -170,14 +166,12 @@ def process_files(folder, selection):
                 df["Type"] = df["Type"].fillna("").astype(str).str.strip()
 
                 if df["Type"].eq("").all():
-
                     if file not in type_cache:
                         type_cache[file] = dropdown_popup(
                             "Select Type",
                             VAL_TYPE_OPTIONS,
                             file
                         )
-
                     df["Type"] = type_cache[file]
 
             # ---------------- EXCEPTION ----------------
