@@ -131,29 +131,21 @@ def process_files(folder, selection):
             if df is None or df.empty:
                 continue
 
-            # normalize columns
             df.columns = df.columns.astype(str).str.strip()
-
-            # drop empty columns
             df = df.dropna(axis=1, how="all")
 
             # USD conversion
             if str(e5).strip().upper() == "USD":
                 df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce") / usd_rate
 
-            # ---------------- PRODUCT CODE ----------------
+            # ---------------- PRODUCT ----------------
             if "Product code" in df.columns:
 
-                df["Product code"] = (
-                    df["Product code"]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                )
+                df["Product code"] = df["Product code"].fillna("").astype(str).str.strip()
 
-                invalid_mask = ~df["Product code"].str.upper().str.startswith("MD")
+                invalid = ~df["Product code"].str.upper().str.startswith("MD")
 
-                if invalid_mask.any():
+                if invalid.any():
 
                     if pd.notna(b5) and str(b5).strip():
                         replacement = str(b5).strip()
@@ -166,19 +158,13 @@ def process_files(folder, selection):
                             )
                         replacement = product_code_cache[file]
 
-                    df.loc[invalid_mask, "Product code"] = replacement
+                    df.loc[invalid, "Product code"] = replacement
 
             # ---------------- TYPE ----------------
             if "Type" in df.columns:
 
-                df["Type"] = (
-                    df["Type"]
-                    .fillna("")
-                    .astype(str)
-                    .str.strip()
-                )
+                df["Type"] = df["Type"].fillna("").astype(str).str.strip()
 
-                # ONLY if completely empty
                 if df["Type"].eq("").all():
 
                     if file not in type_cache:
@@ -192,34 +178,56 @@ def process_files(folder, selection):
 
             # ---------------- EXCEPTION ----------------
             df["Exception"] = ""
-            if "Amount" in df.columns:
-                df.loc[df["Amount"] == 0, "Exception"] = "Zero Amount"
 
-            clean = df[df["Exception"] == ""]
-            exc = df[df["Exception"] != ""]
+            # customer fix
+            if "Customer No." in df.columns:
+                cust = df["Customer No."].fillna("").astype(str).str.strip()
+
+                invalid_cust = (
+                    cust.eq("") |
+                    cust.str.lower().eq("none") |
+                    cust.str.match(r"^[A-Za-z]+$")
+                )
+
+                df.loc[invalid_cust, "Exception"] += "Invalid Customer; "
+
+            if "Amount" in df.columns:
+                df.loc[df["Amount"] == 0, "Exception"] += "Zero Amount; "
+
+            # split
+            clean = df[df["Exception"].str.strip() == ""].copy()
+            exc = df[df["Exception"].str.strip() != ""].copy()
 
             clean_all.append(clean)
             exc_all.append(exc)
 
-            # ---------------- RECON ----------------
+            # ---------------- RECON (FIXED) ----------------
             if "Product code" in df.columns and "Amount" in df.columns:
 
-                grp = df.groupby("Product code")["Amount"].sum().reset_index()
+                input_grp = df.groupby("Product code")["Amount"].sum().reset_index()
+                clean_grp = clean.groupby("Product code")["Amount"].sum().reset_index()
+                exc_grp = exc.groupby("Product code")["Amount"].sum().reset_index()
 
-                for _, r in grp.iterrows():
+                for _, row in input_grp.iterrows():
 
-                    product_val = r["Product code"]
+                    product_val = row["Product code"]
+                    input_total = row["Amount"]
 
-                    clean_total = clean[clean["Product code"] == product_val]["Amount"].sum()
-                    exc_total = exc[exc["Product code"] == product_val]["Amount"].sum()
+                    clean_total = clean_grp.loc[
+                        clean_grp["Product code"] == product_val, "Amount"
+                    ].sum() if not clean_grp.empty else 0
+
+                    exc_total = exc_grp.loc[
+                        exc_grp["Product code"] == product_val, "Amount"
+                    ].sum() if not exc_grp.empty else 0
 
                     recon.append({
                         "File Name": os.path.basename(file),
                         "Product code": product_val,
-                        "Input Total": r["Amount"],
+                        "Input Total": input_total,
                         "UKMR Submission": clean_total,
                         "Exception Total": exc_total,
-                        "Check (Should be 0)": r["Amount"] - (clean_total + exc_total)
+                        "Check (Should be 0)": input_total - (clean_total + exc_total)
                     })
 
     output = os.path.join(folder, "Output_for_SME.xlsx")
@@ -262,7 +270,7 @@ def browse():
         selection[file] = {}
 
         for sheet in xl.sheet_names:
-            var = tk.BooleanVar(value=(sheet.lower() == "income sub."))
+            var = tk.BooleanVar(value=(sheet.lower()=="income sub."))
             tk.Checkbutton(row, text=sheet, variable=var).pack(side="left")
             selection[file][sheet] = var
 
