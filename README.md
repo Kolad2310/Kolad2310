@@ -5,16 +5,12 @@ import pandas as pd
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 import msoffcrypto
-from openpyxl import load_workbook
-from openpyxl.styles import PatternFill
 
 HEADER_ROW = 6
 PRODUCT_CODE_OPTIONS = ["MD001", "MD002", "MD003", "MD004"]
 VAL_TYPE_OPTIONS = ["Type1", "Type2", "Type3"]
 
 password_cache = {}
-product_code_cache = {}
-type_cache = {}
 
 # ---------------- PASSWORD ----------------
 def decrypt_file(file):
@@ -102,14 +98,16 @@ def process_files(folder, selection):
             if df is None or df.empty:
                 continue
 
+            # 🔥 CLEAN DATA
             df.columns = df.columns.astype(str).str.strip()
-            df = df.dropna(axis=1, how="all")
+            df = df.dropna(how="all")         # remove empty rows
+            df = df.iloc[:, :5]               # only first 5 columns
 
-            # Add metadata columns
+            # add metadata
             df["Source File"] = os.path.basename(file)
             df["Source Sheet"] = sheet
 
-            # USD conversion
+            # USD
             if str(e5).strip().upper() == "USD":
                 df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce") / usd_rate
 
@@ -124,9 +122,8 @@ def process_files(folder, selection):
                     ~df["Product code"].str.upper().str.startswith("MD")
                 )
 
-                if invalid.sum() > 0:
+                if invalid.any():
 
-                    # B5 must be valid MD
                     if (
                         pd.notna(b5)
                         and str(b5).strip().upper().startswith("MD")
@@ -134,15 +131,12 @@ def process_files(folder, selection):
                         replacement = str(b5).strip()
 
                     else:
-                        key = f"{file}_{sheet}"
-                        if key not in product_code_cache:
-                            product_code_cache[key] = dropdown_popup(
-                                "Select Product Code",
-                                PRODUCT_CODE_OPTIONS,
-                                file,
-                                sheet
-                            )
-                        replacement = product_code_cache[key]
+                        replacement = dropdown_popup(
+                            "Select Product Code",
+                            PRODUCT_CODE_OPTIONS,
+                            file,
+                            sheet
+                        )
 
                     df.loc[invalid, "Product code"] = replacement
 
@@ -152,16 +146,15 @@ def process_files(folder, selection):
                 df["Type"] = df["Type"].fillna("").astype(str).str.strip()
 
                 if df["Type"].eq("").all():
-                    key = f"{file}_{sheet}"
-                    if key not in type_cache:
-                        type_cache[key] = dropdown_popup(
-                            "Select Type",
-                            VAL_TYPE_OPTIONS,
-                            file,
-                            sheet
-                        )
 
-                    df["Type"] = type_cache[key]
+                    replacement = dropdown_popup(
+                        "Select Type",
+                        VAL_TYPE_OPTIONS,
+                        file,
+                        sheet
+                    )
+
+                    df["Type"] = replacement
 
             # ---------------- EXCEPTION ----------------
             df["Exception"] = ""
