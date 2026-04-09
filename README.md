@@ -15,11 +15,12 @@ VAL_TYPE_OPTIONS = ["Type1", "Type2", "Type3"]
 
 password_cache = {}
 
-# ---------------- PASSWORD (FIXED) ----------------
+# ---------------- PASSWORD ----------------
 def decrypt_file(file):
     if file not in password_cache:
-        pwd = simpledialog.askstring("Password", f"Enter password for:\n{os.path.basename(file)}", show="*")
-        password_cache[file] = pwd
+        password_cache[file] = simpledialog.askstring(
+            "Password", f"Enter password for:\n{os.path.basename(file)}", show="*"
+        )
 
     try:
         with open(file, "rb") as f:
@@ -33,37 +34,39 @@ def decrypt_file(file):
         password_cache.pop(file, None)
         return None
 
-# ---------------- READ EXCEL ----------------
+# ---------------- READ ----------------
 def get_excel_file(file):
     try:
         return pd.ExcelFile(file)
     except:
-        decrypted = decrypt_file(file)
-        if decrypted:
-            return pd.ExcelFile(decrypted)
+        dec = decrypt_file(file)
+        if dec:
+            return pd.ExcelFile(dec)
     return None
 
 def read_excel_safe(file, sheet):
     try:
         return pd.read_excel(file, sheet_name=sheet, header=HEADER_ROW)
     except:
-        decrypted = decrypt_file(file)
-        if decrypted:
-            return pd.read_excel(decrypted, sheet_name=sheet, header=HEADER_ROW)
+        dec = decrypt_file(file)
+        if dec:
+            return pd.read_excel(dec, sheet_name=sheet, header=HEADER_ROW)
     return None
 
 def read_metadata(file, sheet):
     try:
-        return pd.read_excel(file, sheet_name=sheet, header=None, nrows=6).iloc[4, [1,4]]
+        temp = pd.read_excel(file, sheet_name=sheet, header=None, nrows=6)
+        return temp.iloc[4, 1], temp.iloc[4, 4]
     except:
-        decrypted = decrypt_file(file)
-        if decrypted:
-            return pd.read_excel(decrypted, sheet_name=sheet, header=None, nrows=6).iloc[4, [1,4]]
+        dec = decrypt_file(file)
+        if dec:
+            temp = pd.read_excel(dec, sheet_name=sheet, header=None, nrows=6)
+            return temp.iloc[4, 1], temp.iloc[4, 4]
     return None, None
 
 # ---------------- DROPDOWN ----------------
 def dropdown_popup(title, options, file):
-    popup = tk.Toplevel(root)
+    popup = tk.Toplevel()
     popup.title(title)
     popup.geometry("350x150")
     popup.grab_set()
@@ -80,7 +83,7 @@ def dropdown_popup(title, options, file):
 
     return var.get()
 
-# ---------------- FORMATTING ----------------
+# ---------------- FORMAT ----------------
 def format_recon(path):
     wb = load_workbook(path)
     ws = wb["Reconciliation"]
@@ -98,13 +101,8 @@ def format_recon(path):
         for key, color in colors.items():
             if key in str(col_name):
                 fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
-                for row in range(2, ws.max_row + 1):
-                    ws.cell(row=row, column=col_idx).fill = fill
-
-    # Auto width
-    for col in ws.columns:
-        max_len = max(len(str(c.value)) if c.value else 0 for c in col)
-        ws.column_dimensions[col[0].column_letter].width = max_len + 2
+                for r in range(2, ws.max_row + 1):
+                    ws.cell(row=r, column=col_idx).fill = fill
 
     wb.save(path)
 
@@ -127,42 +125,41 @@ def process_files(folder, selection):
             if df is None or df.empty:
                 continue
 
-            # ---------- USD ----------
+            # 🔥 DROP ALL-NA COLUMNS
+            df = df.dropna(axis=1, how="all")
+
+            # USD conversion
             if str(e5).strip().upper() == "USD":
                 df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce") / usd_rate
 
-            # ---------- PRODUCT FIX ----------
+            # PRODUCT
             if "Product" in df.columns:
-
-                # 🔥 robust conversion
                 df["Product"] = df["Product"].fillna("").astype(str).str.strip()
 
-                invalid_mask = ~df["Product"].str.upper().str.startswith("MD")
+                invalid = ~df["Product"].str.upper().str.startswith("MD")
 
-                if invalid_mask.any():
-
+                if invalid.any():
                     if pd.notna(b5) and str(b5).strip():
-                        replacement = str(b5).strip()
+                        rep = str(b5).strip()
                     else:
                         if not product_choice:
                             product_choice = dropdown_popup("Select Product Code", PRODUCT_CODE_OPTIONS, file)
-                        replacement = product_choice
+                        rep = product_choice
 
-                    df.loc[invalid_mask, "Product"] = replacement
+                    df.loc[invalid, "Product"] = rep
 
-            # ---------- TYPE FIX ----------
+            # TYPE
             if "Type" in df.columns:
                 df["Type"] = df["Type"].fillna("").astype(str).str.strip()
 
-                invalid_type = ~df["Type"].isin(VAL_TYPE_OPTIONS)
+                invalid = ~df["Type"].isin(VAL_TYPE_OPTIONS)
 
-                if invalid_type.any():
+                if invalid.any():
                     if not type_choice:
                         type_choice = dropdown_popup("Select Type", VAL_TYPE_OPTIONS, file)
+                    df.loc[invalid, "Type"] = type_choice
 
-                    df.loc[invalid_type, "Type"] = type_choice
-
-            # ---------- EXCEPTION ----------
+            # EXCEPTION
             df["Exception"] = ""
             df.loc[df["Amount"] == 0, "Exception"] = "Zero Amount"
 
@@ -172,7 +169,6 @@ def process_files(folder, selection):
             clean_all.append(clean)
             exc_all.append(exc)
 
-            # ---------- RECON ----------
             grp = df.groupby("Product")["Amount"].sum().reset_index()
 
             for _, r in grp.iterrows():
@@ -202,9 +198,12 @@ def browse():
     if not folder:
         return
 
-    files = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith((".xlsx",".xls",".xlsb",".xlsm"))]
+    root.withdraw()  # 🔥 CLOSE FIRST WINDOW
 
-    win = tk.Toplevel(root)
+    files = [os.path.join(folder, f) for f in os.listdir(folder)
+             if f.lower().endswith((".xlsx",".xls",".xlsb",".xlsm"))]
+
+    win = tk.Toplevel()
     win.geometry("1200x600")
 
     selection = {}
