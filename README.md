@@ -3,50 +3,55 @@ import re
 from docx import Document
 from docx.shared import RGBColor
 
-def write_text_with_colors(text, output_file="output.docx"):
-    doc = Document()
-    p = doc.add_paragraph()
+def write_2word_colored(paragraph, text):
+    """
+    Writes text into a Word paragraph with:
+    - Green for positive values
+    - Red for negative values
+    - Applies to both $ values and bracket content
+    """
 
-    # Pattern:
+    # Token pattern:
     # 1. Brackets → (....)
-    # 2. Dollar values → $18.8m, $-20m, etc.
-    pattern = r'(\(.*?\)|\$\-?\d+\.?\d*[a-zA-Z%]*)'
+    # 2. Dollar values → $18.8m, $-20m
+    # 3. Everything else
+    tokens = re.findall(r'\(.*?\)|\$\-?\d+\.?\d*[a-zA-Z%]*|[^$()]+', text)
 
-    parts = re.split(pattern, text)
-
-    for part in parts:
-        if not part:
-            continue
-
-        run = p.add_run(part)
+    for token in tokens:
+        run = paragraph.add_run(token)
 
         # ----------------------
-        # Case 1: Bracket values
+        # Bracket handling
         # ----------------------
-        if part.startswith('(') and part.endswith(')'):
-            if part.startswith('($'):
+        if token.startswith('(') and token.endswith(')'):
+            if token.startswith('($'):
                 run.font.color.rgb = RGBColor(255, 0, 0)  # Red
             else:
                 run.font.color.rgb = RGBColor(0, 128, 0)  # Green
 
         # ----------------------
-        # Case 2: Dollar values
+        # Dollar value handling
         # ----------------------
-        elif part.startswith('$'):
-            if '$-' in part:
+        elif token.startswith('$'):
+            if '$-' in token:
                 run.font.color.rgb = RGBColor(255, 0, 0)  # Red
             else:
                 run.font.color.rgb = RGBColor(0, 128, 0)  # Green
 
-        # ----------------------
-        # Normal text → no color
-        # ----------------------
-        else:
-            pass
+        # बाकी normal text → default (no color)
+
+
+def create_word_doc(text_list, output_file="output.docx"):
+    """
+    text_list: list of commentary strings
+    """
+    doc = Document()
+    doc.add_heading("Commentary", 0)
+
+    for text in text_list:
+        p = doc.add_paragraph()
+        write_2word_colored(p, text)
 
     doc.save(output_file)
 
-text = "Revenue was $18.8m (20.8% YoY), ($20m), ($30m/42%) vs last year."
-
-write_text_with_colors(text)
 
