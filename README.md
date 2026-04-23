@@ -1,71 +1,52 @@
 ```
-import pandas as pd
-import numpy as np
+import re
 from docx import Document
 from docx.shared import RGBColor
 
-def generate_commentary_word(df, value_col, l1_col, l2_col, output_file="Commentary.docx", top_n=3):
-
-    df = df.copy()
-    df[value_col] = pd.to_numeric(df[value_col], errors='coerce').fillna(0)
-
+def write_text_with_colors(text, output_file="output.docx"):
     doc = Document()
-    doc.add_heading('Performance Commentary', 0)
+    p = doc.add_paragraph()
 
-    # ----------------------
-    # L1 Summary
-    # ----------------------
-    doc.add_heading('L1 Summary', 1)
+    # Pattern:
+    # 1. Brackets → (....)
+    # 2. Dollar values → $18.8m, $-20m, etc.
+    pattern = r'(\(.*?\)|\$\-?\d+\.?\d*[a-zA-Z%]*)'
 
-    l1 = df.groupby(l1_col)[value_col].sum().reset_index()
-    l1 = l1.sort_values(by=value_col, ascending=False)
+    parts = re.split(pattern, text)
 
-    for _, row in l1.iterrows():
-        p = doc.add_paragraph()
-        run = p.add_run(f"{row[l1_col]}: {row[value_col]:,.2f}")
-        run.bold = True
+    for part in parts:
+        if not part:
+            continue
 
-    # ----------------------
-    # L2 Summary
-    # ----------------------
-    doc.add_heading('L2 Breakdown', 1)
+        run = p.add_run(part)
 
-    l2 = df.groupby([l1_col, l2_col])[value_col].sum().reset_index()
-    l2 = l2.sort_values(by=value_col, ascending=False)
+        # ----------------------
+        # Case 1: Bracket values
+        # ----------------------
+        if part.startswith('(') and part.endswith(')'):
+            if part.startswith('($'):
+                run.font.color.rgb = RGBColor(255, 0, 0)  # Red
+            else:
+                run.font.color.rgb = RGBColor(0, 128, 0)  # Green
 
-    for _, row in l2.iterrows():
-        p = doc.add_paragraph(f"{row[l2_col]} under {row[l1_col]}: {row[value_col]:,.2f}")
+        # ----------------------
+        # Case 2: Dollar values
+        # ----------------------
+        elif part.startswith('$'):
+            if '$-' in part:
+                run.font.color.rgb = RGBColor(255, 0, 0)  # Red
+            else:
+                run.font.color.rgb = RGBColor(0, 128, 0)  # Green
 
-    # ----------------------
-    # L3 Explanation
-    # ----------------------
-    doc.add_heading('Key Drivers (L3)', 1)
-
-    top = df.sort_values(by=value_col, ascending=False).head(top_n)
-    bottom = df.sort_values(by=value_col, ascending=True).head(top_n)
-
-    l3 = pd.concat([top, bottom]).drop_duplicates()
-
-    for _, row in l3.iterrows():
-        p = doc.add_paragraph()
-
-        if row[value_col] > 0:
-            text = f"{row[l2_col]} under {row[l1_col]} drove an increase of {row[value_col]:,.2f}"
-            color = RGBColor(0, 128, 0)  # green
-        elif row[value_col] < 0:
-            text = f"{row[l2_col]} under {row[l1_col]} caused a decrease of {row[value_col]:,.2f}"
-            color = RGBColor(255, 0, 0)  # red
+        # ----------------------
+        # Normal text → no color
+        # ----------------------
         else:
-            text = f"{row[l2_col]} under {row[l1_col]} had no impact"
-            color = RGBColor(0, 0, 0)
+            pass
 
-        run = p.add_run(text)
-        run.font.color.rgb = color
-
-    # Save document
     doc.save(output_file)
 
-    return output_file
+text = "Revenue was $18.8m (20.8% YoY), ($20m), ($30m/42%) vs last year."
 
+write_text_with_colors(text)
 
-   5 
