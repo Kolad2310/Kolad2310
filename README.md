@@ -5,32 +5,40 @@ from docx.shared import RGBColor
 
 def write_2word_colored(paragraph, text):
     """
-    Writes text into a Word paragraph with:
-    - Green for positive values
-    - Red for negative values
-    - Applies to both $ values and bracket content
+    Writes text preserving exact spacing, while coloring:
+    - ($...) → Red
+    - (...)  → Green
+    - $values → Green/Red based on sign
     """
 
-    # Token pattern:
-    # 1. Brackets → (....)
-    # 2. Dollar values → $18.8m, $-20m
-    # 3. Everything else
-    tokens = re.findall(r'\(.*?\)|\$\-?\d+\.?\d*[a-zA-Z%]*|[^$()]+', text)
+    # Pattern for:
+    # 1. Brackets
+    # 2. Dollar values
+    pattern = r'\(.*?\)|\$\-?\d+\.?\d*[a-zA-Z%/]*'
 
-    for token in tokens:
+    last_idx = 0
+
+    for match in re.finditer(pattern, text):
+        start, end = match.span()
+
+        # Add normal text BEFORE match (preserve spaces exactly)
+        if start > last_idx:
+            paragraph.add_run(text[last_idx:start])
+
+        token = match.group()
         run = paragraph.add_run(token)
 
         # ----------------------
-        # Bracket handling
+        # Bracket logic
         # ----------------------
-        if token.startswith('(') and token.endswith(')'):
+        if token.startswith('('):
             if token.startswith('($'):
                 run.font.color.rgb = RGBColor(255, 0, 0)  # Red
             else:
                 run.font.color.rgb = RGBColor(0, 128, 0)  # Green
 
         # ----------------------
-        # Dollar value handling
+        # Dollar logic
         # ----------------------
         elif token.startswith('$'):
             if '$-' in token:
@@ -38,13 +46,14 @@ def write_2word_colored(paragraph, text):
             else:
                 run.font.color.rgb = RGBColor(0, 128, 0)  # Green
 
-        # बाकी normal text → default (no color)
+        last_idx = end
+
+    # Add remaining text AFTER last match
+    if last_idx < len(text):
+        paragraph.add_run(text[last_idx:])
 
 
 def create_word_doc(text_list, output_file="output.docx"):
-    """
-    text_list: list of commentary strings
-    """
     doc = Document()
     doc.add_heading("Commentary", 0)
 
@@ -53,5 +62,3 @@ def create_word_doc(text_list, output_file="output.docx"):
         write_2word_colored(p, text)
 
     doc.save(output_file)
-
-
