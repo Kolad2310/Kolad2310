@@ -1,45 +1,51 @@
 ```
-def write_colored_commentary(paragraph, text):
+# =========================================================
+# HEADER MAPPING
+# =========================================================
 
-    pattern = r'''
-        \(-?\$?\d[\d,]*\.?\d*[%mMkKbB]?\) |
-        -?\$?\d[\d,]*\.?\d*[%mMkKbB]?
-    '''
+header_mapping = {
+    'Product Performance': ['L1', 'L3'],
+    'REF Performance': ['L2', 'L4']
+}
 
-    parts = re.split(
-        f'({pattern})',
-        text,
-        flags=re.VERBOSE
-    )
+# =========================================================
+# WRITE TO WORD WITH HEADERS
+# =========================================================
 
-    for part in parts:
+doc = Document()
 
-        if not part:
-            continue
+doc.add_heading(
+    'Financial Commentary',
+    level=1
+)
 
-        run = paragraph.add_run(part)
+for header, labels in header_mapping.items():
 
-        nums = re.findall(
-            r'-?\d[\d,]*\.?\d*',
-            part
+    # ---------------------------------------------
+    # WRITE HEADER
+    # ---------------------------------------------
+
+    doc.add_heading(header, level=2)
+
+    # ---------------------------------------------
+    # WRITE COMMENTARIES UNDER HEADER
+    # ---------------------------------------------
+
+    subset = final_commentary_df[
+        final_commentary_df['Label'].isin(labels)
+    ]
+
+    for _, row in subset.iterrows():
+
+        p = doc.add_paragraph()
+
+        write_colored_commentary(
+            p,
+            row['Commentary']
         )
 
-        if nums:
+# =========================================================
+# SAVE
+# =========================================================
 
-            value = float(
-                nums[0].replace(',', '')
-            )
-
-            # NEGATIVE = RED
-            if '-' in part:
-
-                run.font.color.rgb = RGBColor(
-                    255, 0, 0
-                )
-
-            # POSITIVE = GREEN
-            else:
-
-                run.font.color.rgb = RGBColor(
-                    0, 128, 0
-                )
+doc.save('Financial_Commentary.docx')
