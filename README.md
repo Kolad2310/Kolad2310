@@ -1,20 +1,12 @@
 ```
-def update_column_by_prefix(
-    df,
-    prefix,
-    target_col,
-    source_col_name,
-    check_col='MICA Leaf'
-):
-    mask = df[check_col].str.startswith(prefix, na=False)
+# Pick rows where column 'ABCD' starts with 'AV'
+av_rows = df[df['ABCD'].str.startswith('AV', na=False)].copy()
 
-    df.loc[mask, target_col] = df.loc[mask, source_col_name]
+# Replace 'MICA Leaf' with value from 'ABCD'
+av_rows['MICA Leaf'] = av_rows['ABCD']
 
-    return df
+# Update Source column
+av_rows['Source'] = 'BFA-AV'
 
-
-df = update_column_by_prefix(df, 'MP', 'P&L', 'pl_col')
-
-df = update_column_by_prefix(df, 'MB', 'BS', 'bs_col')
-
-df = update_column_by_prefix(df, 'AV', 'AVB', 'avb_col')
+# Append back to original dataframe
+df = pd.concat([df, av_rows], ignore_index=True)
