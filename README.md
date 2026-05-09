@@ -1,4 +1,4 @@
-```
+
 ```
 # Update P&L
 df.loc[df['MICA Leaf'].str.startswith('MP', na=False), 'P&L'] = (
