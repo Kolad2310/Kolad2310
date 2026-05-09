@@ -1,19 +1,28 @@
-
 ```
-# Update P&L
-df.loc[df['MICA Leaf'].str.startswith('MP', na=False), 'P&L'] = (
-    df.loc[df['MICA Leaf'].str.startswith('MP', na=False), pl_col]
-    .sum(axis=1)
-)
+def update_col_from_prefix(
+    df,
+    source_col,
+    source_val,
+    check_col,
+    prefix,
+    target_col,
+    value_col
+):
+    mask = (
+        (df[source_col] == source_val) &
+        (df[check_col].str.startswith(prefix, na=False))
+    )
 
-# Update BS
-df.loc[df['MICA Leaf'].str.startswith('MB', na=False), 'BS'] = (
-    df.loc[df['MICA Leaf'].str.startswith('MB', na=False), bs_col]
-    .sum(axis=1)
-)
+    df.loc[mask, target_col] = df.loc[mask, value_col]
 
-# Update AVB
-df.loc[df['MICA Leaf'].str.startswith('AV', na=False), 'AVB'] = (
-    df.loc[df['MICA Leaf'].str.startswith('AV', na=False), avb_col]
-    .sum(axis=1)
+    return df
+
+df = update_col_from_prefix(
+    df=df,
+    source_col='Source',
+    source_val='BFA',
+    check_col='abcd',
+    prefix='AV',
+    target_col='AVB',
+    value_col='consol avg bal'
 )
