@@ -1,107 +1,95 @@
 ```
 import pandas as pd
 
-# ---------------------------------------------
-# ref_df columns:
-# Business | Filter Column | Value
-#
-# df4 = source dataframe
-# ---------------------------------------------
+# ---------------------------------------------------
+# IMPORTANT FIX
+# If built-in list was overwritten somewhere
+# ---------------------------------------------------
+try:
+    del list
+except:
+    pass
 
-generated_dfs = {}
 
-# Loop each business
-for business in ref_df['Business'].dropna().unique():
+# ---------------------------------------------------
+# FUNCTION TO ADD SUBTOTALS FOR ALL INDEX LEVELS
+# ---------------------------------------------------
 
-    temp_ref = ref_df[
-        ref_df['Business'] == business
-    ].reset_index(drop=True)
+def add_all_level_subtotals(df):
 
-    all_parts = []
+    # If not MultiIndex
+    if not isinstance(df.index, pd.MultiIndex):
+        return df
 
-    current_df = None
+    nlevels = df.index.nlevels
 
-    # Check if any CG exists
-    has_cg = temp_ref['Value'].astype(str).str.startswith('CG', na=False).any()
+    def recursive_subtotal(data, level=0):
 
-    # =====================================================
-    # CASE 1 : CG EXISTS
-    # =====================================================
-    if has_cg:
+        grouped = data.groupby(level=level, sort=False)
 
-        for _, row in temp_ref.iterrows():
+        parts = []
 
-            filter_col = row['Filter Column']
-            filter_val = row['Value']
+        for key, grp in grouped:
 
-            # Start new dataframe whenever CG comes
-            if str(filter_val).startswith('CG'):
+            # -----------------------------------
+            # Process inner levels
+            # -----------------------------------
+            if level < nlevels - 1:
 
-                # Append previous dataframe
-                if current_df is not None:
-                    all_parts.append(current_df)
+                inner_df = recursive_subtotal(
+                    grp,
+                    level + 1
+                )
 
-                # Start from df4
-                current_df = df4[
-                    df4[filter_col].astype(str) == str(filter_val)
-                ].copy()
+                parts.append(inner_df)
 
             else:
+                parts.append(grp)
 
-                # Apply filter on current CG dataframe
-                if current_df is not None:
+            # -----------------------------------
+            # Create subtotal row
+            # -----------------------------------
+            subtotal = pd.DataFrame(grp.sum()).T
 
-                    current_df = current_df[
-                        current_df[filter_col].astype(str)
-                        == str(filter_val)
-                    ]
+            idx = list(grp.index[0])
 
-        # Append last CG dataframe
-        if current_df is not None:
-            all_parts.append(current_df)
+            # Blank lower levels
+            for i in range(level + 1, nlevels):
+                idx[i] = ''
 
-    # =====================================================
-    # CASE 2 : NO CG EXISTS
-    # =====================================================
-    else:
+            idx[level] = f'{key}_Subtotal'
 
-        # Every filter independently applied on df4
-        # Then append all outputs
+            subtotal.index = pd.MultiIndex.from_tuples(
+                [tuple(idx)],
+                names=df.index.names
+            )
 
-        for _, row in temp_ref.iterrows():
+            parts.append(subtotal)
 
-            filter_col = row['Filter Column']
-            filter_val = row['Value']
+        return pd.concat(parts)
 
-            temp_df = df4[
-                df4[filter_col].astype(str)
-                == str(filter_val)
-            ].copy()
-
-            all_parts.append(temp_df)
-
-    # =====================================================
-    # FINAL DF
-    # =====================================================
-    if all_parts:
-
-        final_df = pd.concat(
-            all_parts,
-            ignore_index=True
-        ).drop_duplicates()
-
-    else:
-        final_df = pd.DataFrame()
-
-    generated_dfs[business] = final_df
+    return recursive_subtotal(df)
 
 
-# ---------------------------------------------
-# Example access
-# ---------------------------------------------
+# ---------------------------------------------------
+# EXAMPLE USAGE
+# ---------------------------------------------------
 
-gts_df = generated_dfs.get('GTS')
-mss_df = generated_dfs.get('MSS')
+# Example:
+# mica_view should already be pivoted dataframe
+#
+# mica_view = pd.pivot_table(...)
 
-print(gts_df.shape)
-print(mss_df.shape)
+mica_view_subtotal = add_all_level_subtotals(
+    mica_view
+)
+
+# Optional
+mica_view_subtotal = mica_view_subtotal.fillna(0)
+
+# Export
+mica_view_subtotal.to_excel(
+    'mica_view_with_subtotals.xlsx'
+)
+
+print(mica_view_subtotal)
