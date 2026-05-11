@@ -1,99 +1,71 @@
 ```
-import pandas as pd
+generated_dfs = {}
 
-def add_all_level_subtotals(df):
-    """
-    Adds subtotal rows for all index levels in a pivot table.
-    Works for MultiIndex rows.
-    """
+for business in ref_df['Business'].unique():
 
-    # Ensure MultiIndex
-    if not isinstance(df.index, pd.MultiIndex):
-        return df
+    business_ref = ref_df[ref_df['Business'] == business]
 
-    levels = df.index.nlevels
-    result = []
+    result_list = []
 
-    def process_level(data, level_no):
-        
-        grouped = data.groupby(level=list(range(level_no + 1)), sort=False)
+    # Identify first filter column
+    first_col = business_ref.iloc[0]['Filter Column']
 
-        temp = []
+    # Values of first filter
+    first_values = business_ref[
+        business_ref['Filter Column'] == first_col
+    ]['Value'].unique()
 
-        for keys, grp in grouped:
+    # If first filter values contain CG-like split logic
+    # process separately and append
+    if any(str(v).startswith('CG') for v in first_values):
 
-            # Add actual rows
-            temp.append(grp)
+        for val in first_values:
 
-            # Add subtotal if not last level
-            if level_no < levels - 1:
+            temp_df = df4[
+                df4[first_col] == val
+            ].copy()
 
-                subtotal = pd.DataFrame(grp.sum()).T
-
-                if not isinstance(keys, tuple):
-                    keys = (keys,)
-
-                subtotal_index = list(keys)
-
-                # Fill remaining levels
-                while len(subtotal_index) < levels:
-                    subtotal_index.append('')
-
-                subtotal_index[level_no + 1] = 'Subtotal'
-
-                subtotal.index = pd.MultiIndex.from_tuples(
-                    [tuple(subtotal_index)],
-                    names=df.index.names
+            # Remaining filters
+            remaining = business_ref[
+                ~(
+                    (business_ref['Filter Column'] == first_col) &
+                    (business_ref['Value'] == val)
                 )
+            ]
 
-                temp.append(subtotal)
+            for col, grp in remaining.groupby('Filter Column'):
 
-        return pd.concat(temp)
+                vals = grp['Value'].tolist()
 
-    final = df.copy()
+                temp_df = temp_df[
+                    temp_df[col].isin(vals)
+                ]
 
-    # Add subtotals progressively
-    for lvl in reversed(range(levels - 1)):
-        final = process_level(final, lvl)
+            result_list.append(temp_df)
 
-    return final
+    else:
+        # No CG logic
+        # Apply all conditions directly on df4
 
+        temp_df = df4.copy()
 
-# -------------------------------
-# APPLY TO YOUR PIVOT VIEWS
-# -------------------------------
+        for col, grp in business_ref.groupby('Filter Column'):
 
-# mica_view
-mica_view_subtotal = add_all_level_subtotals(
-    mica_view.set_index(
-        ['Level 1_mica', 'MICA Leaf', 'Leaf Description_mica']
+            vals = grp['Value'].tolist()
+
+            temp_df = temp_df[
+                temp_df[col].isin(vals)
+            ]
+
+        result_list.append(temp_df)
+
+    # Final dataframe
+    generated_dfs[business] = (
+        pd.concat(result_list, ignore_index=True)
+        .drop_duplicates()
     )
-)
 
-# mifunc_view
-mifunc_view_subtotal = add_all_level_subtotals(
-    mifunc_view.set_index([
-        'Consolidated Period Mi Function Code',
-        'Leaf Description_mifunc',
-        'Level 3_mifunc',
-        'Description 3_mifunc',
-        'Level 4_mifunc',
-        'Description 4_mifunc'
-    ])
-)
 
-# entity_view
-entity_view_subtotal = add_all_level_subtotals(
-    entity_view.set_index(['Consolidated Period Entity ID'])
-)
-
-# Optional
-mica_view_subtotal = mica_view_subtotal.fillna(0)
-mifunc_view_subtotal = mifunc_view_subtotal.fillna(0)
-entity_view_subtotal = entity_view_subtotal.fillna(0)
-
-# Export
-with pd.ExcelWriter('pivot_with_subtotals.xlsx') as writer:
-    mica_view_subtotal.to_excel(writer, sheet_name='MICA')
-    mifunc_view_subtotal.to_excel(writer, sheet_name='MIFUNC')
-    entity_view_subtotal.to_excel(writer, sheet_name='ENTITY')
+# Example
+gts_df = generated_dfs['GTS']
+mss_df = generated_dfs['MSS']
