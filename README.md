@@ -1,96 +1,92 @@
 ```
 import pandas as pd
 
-# -----------------------------------
-# Example:
+# ---------------------------------------------
 # ref_df columns:
 # Business | Filter Column | Value
 #
 # df4 = source dataframe
-# -----------------------------------
+# ---------------------------------------------
 
 generated_dfs = {}
 
-# Loop each Business
+# Loop each business
 for business in ref_df['Business'].dropna().unique():
 
-    business_ref = ref_df[
+    temp_ref = ref_df[
         ref_df['Business'] == business
-    ].copy()
+    ].reset_index(drop=True)
 
-    business_ref = business_ref.dropna(
-        subset=['Filter Column', 'Value']
-    )
+    all_parts = []
 
-    result_list = []
+    current_df = None
 
-    # -----------------------------------
-    # Detect CG rows
-    # -----------------------------------
-    cg_rows = business_ref[
-        business_ref['Value']
-        .astype(str)
-        .str.startswith('CG', na=False)
-    ]
+    # Check if any CG exists
+    has_cg = temp_ref['Value'].astype(str).str.startswith('CG', na=False).any()
 
-    # -----------------------------------
-    # CASE 1 : CG exists
-    # -----------------------------------
-    if not cg_rows.empty:
+    # =====================================================
+    # CASE 1 : CG EXISTS
+    # =====================================================
+    if has_cg:
 
-        for cg_value in cg_rows['Value'].unique():
+        for _, row in temp_ref.iterrows():
 
-            # Find corresponding filter column
-            cg_col = cg_rows[
-                cg_rows['Value'] == cg_value
-            ]['Filter Column'].iloc[0]
+            filter_col = row['Filter Column']
+            filter_val = row['Value']
 
-            # Filter df4 for that CG first
-            temp_df = df4[
-                df4[cg_col].astype(str) == str(cg_value)
-            ].copy()
+            # Start new dataframe whenever CG comes
+            if str(filter_val).startswith('CG'):
 
-            # Apply remaining filters
-            remaining_filters = business_ref[
-                ~(
-                    (business_ref['Filter Column'] == cg_col) &
-                    (business_ref['Value'] == cg_value)
-                )
-            ]
+                # Append previous dataframe
+                if current_df is not None:
+                    all_parts.append(current_df)
 
-            for col, grp in remaining_filters.groupby('Filter Column'):
+                # Start from df4
+                current_df = df4[
+                    df4[filter_col].astype(str) == str(filter_val)
+                ].copy()
 
-                vals = grp['Value'].astype(str).tolist()
+            else:
 
-                temp_df = temp_df[
-                    temp_df[col].astype(str).isin(vals)
-                ]
+                # Apply filter on current CG dataframe
+                if current_df is not None:
 
-            result_list.append(temp_df)
+                    current_df = current_df[
+                        current_df[filter_col].astype(str)
+                        == str(filter_val)
+                    ]
 
-    # -----------------------------------
-    # CASE 2 : No CG exists
-    # -----------------------------------
+        # Append last CG dataframe
+        if current_df is not None:
+            all_parts.append(current_df)
+
+    # =====================================================
+    # CASE 2 : NO CG EXISTS
+    # =====================================================
     else:
 
-        temp_df = df4.copy()
+        # Every filter independently applied on df4
+        # Then append all outputs
 
-        for col, grp in business_ref.groupby('Filter Column'):
+        for _, row in temp_ref.iterrows():
 
-            vals = grp['Value'].astype(str).tolist()
+            filter_col = row['Filter Column']
+            filter_val = row['Value']
 
-            temp_df = temp_df[
-                temp_df[col].astype(str).isin(vals)
-            ]
+            temp_df = df4[
+                df4[filter_col].astype(str)
+                == str(filter_val)
+            ].copy()
 
-        result_list.append(temp_df)
+            all_parts.append(temp_df)
 
-    # -----------------------------------
-    # Final dataframe for business
-    # -----------------------------------
-    if result_list:
+    # =====================================================
+    # FINAL DF
+    # =====================================================
+    if all_parts:
+
         final_df = pd.concat(
-            result_list,
+            all_parts,
             ignore_index=True
         ).drop_duplicates()
 
@@ -99,13 +95,13 @@ for business in ref_df['Business'].dropna().unique():
 
     generated_dfs[business] = final_df
 
-# -----------------------------------
-# Example usage
-# -----------------------------------
+
+# ---------------------------------------------
+# Example access
+# ---------------------------------------------
 
 gts_df = generated_dfs.get('GTS')
 mss_df = generated_dfs.get('MSS')
 
-# Check outputs
 print(gts_df.shape)
 print(mss_df.shape)
