@@ -4,186 +4,26 @@ import numpy as np
 import os
 from datetime import datetime
 
-from openpyxl.utils import get_column_letter
-from openpyxl.styles import (
-    PatternFill,
-    Font,
-    Alignment
+import win32com.client as win32
+from openpyxl import load_workbook
+
+# =========================================================
+# READ REFERENCE FILE
+# =========================================================
+
+ref_df = pd.read_excel(
+    r'HCIB Product_Business area split Matrix_AK.xlsx'
 )
 
 # =========================================================
-# OUTPUT FILE
+# OUTPUT FOLDER
 # =========================================================
 
 timestamp = datetime.now().strftime('%d%b_%H%M')
 
-output_file = f'Full_Product_View_{timestamp}.xlsx'
+output_folder = f'Product_slices_{timestamp}'
 
-# =========================================================
-# HEADER COLORS
-# =========================================================
-
-RAW_HEADER_FILL = PatternFill(
-    start_color='BFBFBF',
-    end_color='BFBFBF',
-    fill_type='solid'
-)
-
-PL_HEADER_FILL = PatternFill(
-    start_color='F4CCCC',
-    end_color='F4CCCC',
-    fill_type='solid'
-)
-
-BS_HEADER_FILL = PatternFill(
-    start_color='CFE2F3',
-    end_color='CFE2F3',
-    fill_type='solid'
-)
-
-AVB_HEADER_FILL = PatternFill(
-    start_color='D9EAD3',
-    end_color='D9EAD3',
-    fill_type='solid'
-)
-
-HEADER_FONT = Font(
-    bold=True
-)
-
-LEFT_ALIGN = Alignment(
-    horizontal='left'
-)
-
-# =========================================================
-# FUNCTIONS
-# =========================================================
-
-def auto_adjust_column_width(ws):
-
-    for column_cells in ws.columns:
-
-        max_length = 0
-
-        column_letter = get_column_letter(
-            column_cells[0].column
-        )
-
-        for cell in column_cells:
-
-            try:
-
-                if cell.value is not None:
-
-                    max_length = max(
-                        max_length,
-                        len(str(cell.value))
-                    )
-
-            except:
-                pass
-
-        adjusted_width = min(
-            max_length + 3,
-            60
-        )
-
-        ws.column_dimensions[
-            column_letter
-        ].width = adjusted_width
-
-
-def apply_number_format(ws):
-
-    for row in ws.iter_rows():
-
-        for cell in row:
-
-            if isinstance(
-                cell.value,
-                (
-                    int,
-                    float,
-                    np.integer,
-                    np.floating
-                )
-            ):
-
-                cell.number_format = '#,##0'
-
-
-def drop_all_zero_rows_pivot(df):
-
-    numeric_df = df.select_dtypes(
-        include='number'
-    )
-
-    return df[
-        ~(numeric_df
-          .fillna(0)
-          .eq(0)
-          .all(axis=1))
-    ]
-
-
-def color_headers(ws):
-
-    # =====================================================
-    # RAW DATA
-    # =====================================================
-
-    if ws.title == 'Raw_Data':
-
-        for cell in ws[1]:
-
-            cell.fill = RAW_HEADER_FILL
-            cell.font = HEADER_FONT
-
-        return
-
-    # =====================================================
-    # PIVOT HEADERS
-    # =====================================================
-
-    for row in [1, 2]:
-
-        for cell in ws[row]:
-
-            value = str(cell.value)
-
-            if 'P&L' in value:
-
-                cell.fill = PL_HEADER_FILL
-
-            elif 'BS' in value:
-
-                cell.fill = BS_HEADER_FILL
-
-            elif 'AVB' in value:
-
-                cell.fill = AVB_HEADER_FILL
-
-            else:
-
-                cell.fill = RAW_HEADER_FILL
-
-            cell.font = HEADER_FONT
-
-
-def left_align_index_columns(ws):
-
-    if ws.title == 'Raw_Data':
-        return
-
-    for col in range(1, 6):
-
-        for row in range(1, ws.max_row + 1):
-
-            ws.cell(
-                row=row,
-                column=col
-            ).alignment = LEFT_ALIGN
-
+os.makedirs(output_folder, exist_ok=True)
 
 # =========================================================
 # DESCRIPTION COLUMNS
@@ -220,201 +60,423 @@ df4['Level9_mica_desc'] = (
 )
 
 # =========================================================
-# GENERIC PIVOT FUNCTION
+# GENERATE BUSINESS LEVEL DATAFRAMES
 # =========================================================
 
-def build_view(
-    source_df,
-    index_cols,
-    value_cols
-):
+for business in ref_df['Business'].dropna().unique():
 
-    pivot_df = source_df.pivot_table(
-        index=index_cols,
-        columns='Source_sys',
-        values=value_cols,
-        aggfunc='sum',
-        fill_value=0
+    print(f'Processing : {business}')
+
+    temp_ref = ref_df[
+        ref_df['Business'] == business
+    ].reset_index(drop=True)
+
+    all_parts = []
+
+    current_df = None
+
+    has_cg = temp_ref['Value'].astype(str).str.startswith(
+        'CG',
+        na=False
+    ).any()
+
+    # =====================================================
+    # CG LOGIC
+    # =====================================================
+
+    if has_cg:
+
+        for _, row in temp_ref.iterrows():
+
+            filter_col = row['Filter Column']
+
+            filter_val = row['Value']
+
+            if str(filter_val).startswith('CG'):
+
+                if current_df is not None:
+                    all_parts.append(current_df)
+
+                current_df = df4[
+                    df4[filter_col].astype(str)
+                    == str(filter_val)
+                ].copy()
+
+            else:
+
+                if current_df is not None:
+
+                    current_df = current_df[
+                        current_df[filter_col].astype(str)
+                        == str(filter_val)
+                    ]
+
+        if current_df is not None:
+            all_parts.append(current_df)
+
+    else:
+
+        for _, row in temp_ref.iterrows():
+
+            filter_col = row['Filter Column']
+
+            filter_val = row['Value']
+
+            temp_df = df4[
+                df4[filter_col].astype(str)
+                == str(filter_val)
+            ].copy()
+
+            all_parts.append(temp_df)
+
+    # =====================================================
+    # FINAL DF
+    # =====================================================
+
+    generated_df = pd.concat(
+        all_parts,
+        ignore_index=True
+    ).drop_duplicates()
+
+    # =====================================================
+    # FILE NAME
+    # =====================================================
+
+    safe_business = (
+        str(business)
+        .replace('/', '_')
+        .replace('\\', '_')
+    )
+
+    output_file = os.path.join(
+        output_folder,
+        f'{safe_business}_{timestamp}.xlsx'
     )
 
     # =====================================================
-    # VARIANCES
+    # WRITE RAW DATA
     # =====================================================
 
-    for sec in value_cols:
+    with pd.ExcelWriter(
+        output_file,
+        engine='xlsxwriter'
+    ) as writer:
 
-        pivot_df[(f'{sec}_var', 'BFA_vs_CVUK')] = (
-            pivot_df.get((sec, 'BFA'), 0)
-            + pivot_df.get((sec, 'CVUK'), 0)
+        generated_df.to_excel(
+            writer,
+            sheet_name='Raw_Data',
+            index=False
         )
 
-        pivot_df[(f'{sec}_var', 'BFA_vs_GRC')] = (
-            pivot_df.get((sec, 'BFA'), 0)
-            + pivot_df.get((sec, 'GRC'), 0)
+        workbook = writer.book
+
+        raw_ws = writer.sheets['Raw_Data']
+
+        # =================================================
+        # FORMATS
+        # =================================================
+
+        grey_header = workbook.add_format({
+            'bold': True,
+            'bg_color': '#BFBFBF',
+            'border': 1
+        })
+
+        number_format = workbook.add_format({
+            'num_format': '#,##0'
+        })
+
+        # =================================================
+        # AUTO WIDTH
+        # =================================================
+
+        for idx, col in enumerate(generated_df.columns):
+
+            try:
+
+                max_len = max(
+                    generated_df[col]
+                    .astype(str)
+                    .map(len)
+                    .max(),
+                    len(col)
+                ) + 3
+
+            except:
+
+                max_len = len(col) + 3
+
+            raw_ws.set_column(
+                idx,
+                idx,
+                min(max_len, 50)
+            )
+
+        # =================================================
+        # HEADER FORMAT
+        # =================================================
+
+        for col_num, value in enumerate(generated_df.columns.values):
+
+            raw_ws.write(
+                0,
+                col_num,
+                value,
+                grey_header
+            )
+
+        # =================================================
+        # NUMBER FORMAT
+        # =================================================
+
+        numeric_cols = generated_df.select_dtypes(
+            include='number'
+        ).columns
+
+        for col in numeric_cols:
+
+            col_idx = generated_df.columns.get_loc(col)
+
+            raw_ws.set_column(
+                col_idx,
+                col_idx,
+                None,
+                number_format
+            )
+
+        # =================================================
+        # CREATE EXCEL TABLE
+        # =================================================
+
+        rows, cols = generated_df.shape
+
+        raw_ws.add_table(
+            0,
+            0,
+            rows,
+            cols - 1,
+            {
+                'name': 'RawTable',
+                'columns': [
+                    {'header': c}
+                    for c in generated_df.columns
+                ],
+                'style': 'Table Style Medium 2'
+            }
         )
 
-        pivot_df[(f'{sec}_var', 'GRC_vs_CVUK')] = (
-            pivot_df.get((sec, 'GRC'), 0)
-            - pivot_df.get((sec, 'CVUK'), 0)
-        )
+        # =================================================
+        # EMPTY PIVOT SHEETS
+        # =================================================
 
-    pivot_df = drop_all_zero_rows_pivot(
-        pivot_df
-    )
+        workbook.add_worksheet('MICA_View_PL')
+        workbook.add_worksheet('MICA_View_BS')
+        workbook.add_worksheet('MICA_View_AVB')
+        workbook.add_worksheet('MI_Func_RTNs')
+        workbook.add_worksheet('Entity_View')
 
-    return pivot_df
+    # =====================================================
+    # CREATE REAL EXCEL PIVOTS USING WIN32
+    # =====================================================
 
+    excel = win32.gencache.EnsureDispatch('Excel.Application')
 
-# =========================================================
-# P&L VIEW
-# =========================================================
+    excel.Visible = False
 
-df4_pl = df4[
-    df4['MICA Leaf'].str.startswith(
-        'MP',
-        na=False
-    )
-]
-
-mica_view_pl = build_view(
-    df4_pl,
-    [
-        'Level1_mica_desc',
-        'Level3_mica_desc',
-        'Level8_mica_desc',
-        'Level9_mica_desc'
-    ],
-    ['P&L']
-)
-
-# =========================================================
-# BS VIEW
-# =========================================================
-
-df4_bs = df4[
-    df4['MICA Leaf'].str.startswith(
-        'MB',
-        na=False
-    )
-]
-
-mica_view_bs = build_view(
-    df4_bs,
-    [
-        'Level1_mica_desc',
-        'Level2_mica_desc',
-        'Level3_mica_desc'
-    ],
-    ['BS']
-)
-
-# =========================================================
-# AVB VIEW
-# =========================================================
-
-df4_avb = df4[
-    df4['MICA Leaf'].str.startswith(
-        'AV',
-        na=False
-    )
-]
-
-mica_view_avb = build_view(
-    df4_avb,
-    [
-        'Level1_mica_desc',
-        'Level2_mica_desc',
-        'Level3_mica_desc'
-    ],
-    ['AVB']
-)
-
-# =========================================================
-# MI FUNCTION VIEW
-# =========================================================
-
-mifunc_view = build_view(
-    df4,
-    [
-        'Consolidated Period Mi Function Code',
-        'Function Leaf Description',
-        'Function Level 3',
-        'Function Description'
-    ],
-    ['AVB', 'BS', 'P&L']
-)
-
-# =========================================================
-# ENTITY VIEW
-# =========================================================
-
-entity_view = build_view(
-    df4,
-    [
-        'Consolidated Period Entity ID'
-    ],
-    ['AVB', 'BS', 'P&L']
-)
-
-# =========================================================
-# WRITE EXCEL
-# =========================================================
-
-with pd.ExcelWriter(
-    output_file,
-    engine='openpyxl'
-) as writer:
-
-    df4.to_excel(
-        writer,
-        sheet_name='Raw_Data',
-        index=False
-    )
-
-    mica_view_pl.to_excel(
-        writer,
-        sheet_name='MICA_View_PL',
-        index=True
-    )
-
-    mica_view_bs.to_excel(
-        writer,
-        sheet_name='MICA_View_BS',
-        index=True
-    )
-
-    mica_view_avb.to_excel(
-        writer,
-        sheet_name='MICA_View_AVB',
-        index=True
-    )
-
-    mifunc_view.to_excel(
-        writer,
-        sheet_name='MI_Func_RTNs',
-        index=True
-    )
-
-    entity_view.to_excel(
-        writer,
-        sheet_name='Entity_View',
-        index=True
+    wb = excel.Workbooks.Open(
+        os.path.abspath(output_file)
     )
 
     # =====================================================
-    # FORMAT SHEETS
+    # SOURCE RANGE
     # =====================================================
 
-    for sheet in writer.book.sheetnames:
+    source_sheet = wb.Sheets('Raw_Data')
 
-        ws = writer.book[sheet]
+    last_row = source_sheet.Cells(
+        source_sheet.Rows.Count,
+        1
+    ).End(-4162).Row
 
-        auto_adjust_column_width(ws)
+    last_col = source_sheet.Cells(
+        1,
+        source_sheet.Columns.Count
+    ).End(-4159).Column
 
-        apply_number_format(ws)
+    source_range = (
+        f"Raw_Data!R1C1:R{last_row}C{last_col}"
+    )
 
-        color_headers(ws)
+    pivot_cache = wb.PivotCaches().Create(
+        SourceType=1,
+        SourceData=source_range
+    )
 
-        left_align_index_columns(ws)
+    # =====================================================
+    # HELPER FUNCTION
+    # =====================================================
 
-print(f'Created : {output_file}')
+    def create_pivot(
+        sheet_name,
+        rows,
+        columns,
+        values
+    ):
+
+        ws = wb.Sheets(sheet_name)
+
+        pivot_table = pivot_cache.CreatePivotTable(
+            TableDestination=f"{sheet_name}!R3C1",
+            TableName=f"Pivot_{sheet_name}"
+        )
+
+        # ================================================
+        # FILTERS
+        # ================================================
+
+        pivot_table.PivotFields(
+            'Scope'
+        ).Orientation = 3
+
+        pivot_table.PivotFields(
+            'Scope'
+        ).Position = 1
+
+        # ================================================
+        # ROWS
+        # ================================================
+
+        for idx, row_field in enumerate(rows):
+
+            pivot_table.PivotFields(
+                row_field
+            ).Orientation = 1
+
+            pivot_table.PivotFields(
+                row_field
+            ).Position = idx + 1
+
+        # ================================================
+        # COLUMNS
+        # ================================================
+
+        for idx, col_field in enumerate(columns):
+
+            pivot_table.PivotFields(
+                col_field
+            ).Orientation = 2
+
+            pivot_table.PivotFields(
+                col_field
+            ).Position = idx + 1
+
+        # ================================================
+        # VALUES
+        # ================================================
+
+        for value_field in values:
+
+            pivot_table.AddDataField(
+                pivot_table.PivotFields(value_field),
+                f'Sum of {value_field}',
+                -4157
+            )
+
+        # ================================================
+        # PIVOT STYLE
+        # ================================================
+
+        pivot_table.ShowTableStyleRowStripes = True
+
+        pivot_table.RowAxisLayout(1)
+
+        pivot_table.RepeatAllLabels(2)
+
+    # =====================================================
+    # P&L PIVOT
+    # =====================================================
+
+    create_pivot(
+        'MICA_View_PL',
+        rows=[
+            'Level1_mica_desc',
+            'Level3_mica_desc',
+            'Level8_mica_desc',
+            'Level9_mica_desc'
+        ],
+        columns=['Source_sys'],
+        values=['P&L']
+    )
+
+    # =====================================================
+    # BS PIVOT
+    # =====================================================
+
+    create_pivot(
+        'MICA_View_BS',
+        rows=[
+            'Level1_mica_desc',
+            'Level2_mica_desc',
+            'Level3_mica_desc'
+        ],
+        columns=['Source_sys'],
+        values=['BS']
+    )
+
+    # =====================================================
+    # AVB PIVOT
+    # =====================================================
+
+    create_pivot(
+        'MICA_View_AVB',
+        rows=[
+            'Level1_mica_desc',
+            'Level2_mica_desc',
+            'Level3_mica_desc'
+        ],
+        columns=['Source_sys'],
+        values=['AVB']
+    )
+
+    # =====================================================
+    # MI FUNCTION PIVOT
+    # =====================================================
+
+    create_pivot(
+        'MI_Func_RTNs',
+        rows=[
+            'Consolidated Period Mi Function Code',
+            'Function Leaf Description',
+            'Function Level 3',
+            'Function Description'
+        ],
+        columns=['Source_sys'],
+        values=['AVB', 'BS', 'P&L']
+    )
+
+    # =====================================================
+    # ENTITY PIVOT
+    # =====================================================
+
+    create_pivot(
+        'Entity_View',
+        rows=[
+            'Consolidated Period Entity ID'
+        ],
+        columns=['Source_sys'],
+        values=['AVB', 'BS', 'P&L']
+    )
+
+    # =====================================================
+    # SAVE
+    # =====================================================
+
+    wb.Save()
+
+    wb.Close()
+
+    excel.Quit()
+
+    print(f'Created : {output_file}')
+
+print('All business files generated successfully.')
