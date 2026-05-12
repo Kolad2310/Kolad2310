@@ -3,7 +3,9 @@ import pandas as pd
 import numpy as np
 import os
 from datetime import datetime
+
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import PatternFill, Font
 
 # =========================================================
 # READ REFERENCE FILE
@@ -24,6 +26,38 @@ output_folder = f'Product_slices_{timestamp}'
 os.makedirs(output_folder, exist_ok=True)
 
 # =========================================================
+# HEADER COLORS
+# =========================================================
+
+RAW_HEADER_FILL = PatternFill(
+    start_color='BFBFBF',
+    end_color='BFBFBF',
+    fill_type='solid'
+)
+
+PL_HEADER_FILL = PatternFill(
+    start_color='F4CCCC',
+    end_color='F4CCCC',
+    fill_type='solid'
+)
+
+BS_HEADER_FILL = PatternFill(
+    start_color='CFE2F3',
+    end_color='CFE2F3',
+    fill_type='solid'
+)
+
+AVB_HEADER_FILL = PatternFill(
+    start_color='D9EAD3',
+    end_color='D9EAD3',
+    fill_type='solid'
+)
+
+HEADER_FONT = Font(
+    bold=True
+)
+
+# =========================================================
 # FUNCTIONS
 # =========================================================
 
@@ -41,15 +75,12 @@ def auto_adjust_column_width(ws):
 
             try:
 
-                cell_value = str(cell.value)
+                if cell.value is not None:
 
-                if cell_value is None:
-                    cell_value = ''
-
-                max_length = max(
-                    max_length,
-                    len(cell_value)
-                )
+                    max_length = max(
+                        max_length,
+                        len(str(cell.value))
+                    )
 
             except:
                 pass
@@ -88,24 +119,35 @@ def add_grand_total(df):
 
     total_row = df[numeric_cols].sum()
 
-    total_df = pd.DataFrame([total_row])
-
-    # non numeric cols blank
-    for col in df.columns:
-
-        if col not in numeric_cols:
-            total_df[col] = ''
-
-    total_df[df.columns[0]] = 'Grand Total'
-
-    total_df = total_df[df.columns]
-
-    df = pd.concat(
-        [df, total_df],
-        ignore_index=True
+    total_df = pd.DataFrame(
+        [total_row],
+        index=['Grand Total']
     )
 
+    df = pd.concat([df, total_df])
+
     return df
+
+
+def color_headers(ws, fill):
+
+    # raw data
+    if ws.title == 'Raw_Data':
+
+        for cell in ws[1]:
+
+            cell.fill = fill
+            cell.font = HEADER_FONT
+
+    else:
+
+        # pivots
+        for row in [1, 2]:
+
+            for cell in ws[row]:
+
+                cell.fill = fill
+                cell.font = HEADER_FONT
 
 
 # =========================================================
@@ -117,7 +159,7 @@ for business in ref_df['Business'].dropna().unique():
     print(f'Processing : {business}')
 
     # =====================================================
-    # FILTER REF
+    # FILTER REFERENCE
     # =====================================================
 
     temp_ref = ref_df[
@@ -129,7 +171,7 @@ for business in ref_df['Business'].dropna().unique():
     current_df = None
 
     # =====================================================
-    # CHECK CG EXISTS
+    # CHECK IF CG EXISTS
     # =====================================================
 
     has_cg = temp_ref['Value'].astype(str).str.startswith(
@@ -173,7 +215,6 @@ for business in ref_df['Business'].dropna().unique():
                         == str(filter_val)
                     ]
 
-        # append last df
         if current_df is not None:
 
             all_parts.append(current_df)
@@ -287,17 +328,6 @@ for business in ref_df['Business'].dropna().unique():
             - mica_view_pl.get((sec, 'CVUK'), 0)
         )
 
-    mica_view_pl = mica_view_pl.reset_index()
-
-    mica_view_pl.columns = [
-        '_'.join(
-            [str(i) for i in col if str(i) != '']
-        ).strip('_')
-        if isinstance(col, tuple)
-        else col
-        for col in mica_view_pl.columns
-    ]
-
     mica_view_pl = add_grand_total(
         mica_view_pl
     )
@@ -341,17 +371,6 @@ for business in ref_df['Business'].dropna().unique():
             mica_view_bs.get((sec, 'GRC'), 0)
             - mica_view_bs.get((sec, 'CVUK'), 0)
         )
-
-    mica_view_bs = mica_view_bs.reset_index()
-
-    mica_view_bs.columns = [
-        '_'.join(
-            [str(i) for i in col if str(i) != '']
-        ).strip('_')
-        if isinstance(col, tuple)
-        else col
-        for col in mica_view_bs.columns
-    ]
 
     mica_view_bs = add_grand_total(
         mica_view_bs
@@ -397,17 +416,6 @@ for business in ref_df['Business'].dropna().unique():
             - mica_view_avb.get((sec, 'CVUK'), 0)
         )
 
-    mica_view_avb = mica_view_avb.reset_index()
-
-    mica_view_avb.columns = [
-        '_'.join(
-            [str(i) for i in col if str(i) != '']
-        ).strip('_')
-        if isinstance(col, tuple)
-        else col
-        for col in mica_view_avb.columns
-    ]
-
     mica_view_avb = add_grand_total(
         mica_view_avb
     )
@@ -446,17 +454,6 @@ for business in ref_df['Business'].dropna().unique():
             - mifunc_view.get((sec, 'CVUK'), 0)
         )
 
-    mifunc_view = mifunc_view.reset_index()
-
-    mifunc_view.columns = [
-        '_'.join(
-            [str(i) for i in col if str(i) != '']
-        ).strip('_')
-        if isinstance(col, tuple)
-        else col
-        for col in mifunc_view.columns
-    ]
-
     mifunc_view = add_grand_total(
         mifunc_view
     )
@@ -491,17 +488,6 @@ for business in ref_df['Business'].dropna().unique():
             entity_view.get((sec, 'GRC'), 0)
             - entity_view.get((sec, 'CVUK'), 0)
         )
-
-    entity_view = entity_view.reset_index()
-
-    entity_view.columns = [
-        '_'.join(
-            [str(i) for i in col if str(i) != '']
-        ).strip('_')
-        if isinstance(col, tuple)
-        else col
-        for col in entity_view.columns
-    ]
 
     entity_view = add_grand_total(
         entity_view
@@ -539,32 +525,27 @@ for business in ref_df['Business'].dropna().unique():
 
         mica_view_pl.to_excel(
             writer,
-            sheet_name='MICA_View_PL',
-            index=False
+            sheet_name='MICA_View_PL'
         )
 
         mica_view_bs.to_excel(
             writer,
-            sheet_name='MICA_View_BS',
-            index=False
+            sheet_name='MICA_View_BS'
         )
 
         mica_view_avb.to_excel(
             writer,
-            sheet_name='MICA_View_AVB',
-            index=False
+            sheet_name='MICA_View_AVB'
         )
 
         mifunc_view.to_excel(
             writer,
-            sheet_name='MI_Func_RTNs',
-            index=False
+            sheet_name='MI_Func_RTNs'
         )
 
         entity_view.to_excel(
             writer,
-            sheet_name='Entity_View',
-            index=False
+            sheet_name='Entity_View'
         )
 
         # =================================================
@@ -578,6 +559,45 @@ for business in ref_df['Business'].dropna().unique():
             auto_adjust_column_width(ws)
 
             apply_number_format(ws)
+
+            # =============================================
+            # HEADER COLORS
+            # =============================================
+
+            if sheet == 'Raw_Data':
+
+                color_headers(
+                    ws,
+                    RAW_HEADER_FILL
+                )
+
+            elif 'PL' in sheet:
+
+                color_headers(
+                    ws,
+                    PL_HEADER_FILL
+                )
+
+            elif 'BS' in sheet:
+
+                color_headers(
+                    ws,
+                    BS_HEADER_FILL
+                )
+
+            elif 'AVB' in sheet:
+
+                color_headers(
+                    ws,
+                    AVB_HEADER_FILL
+                )
+
+            else:
+
+                color_headers(
+                    ws,
+                    RAW_HEADER_FILL
+                )
 
     print(f'Created : {output_file}')
 
