@@ -5,7 +5,9 @@ import os
 import shutil
 
 from datetime import datetime
+
 from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 # =========================================================
 # TEMPLATE FILE
@@ -93,6 +95,10 @@ for business in ref_df['Business'].dropna().unique():
 
     print(f'Processing : {business}')
 
+    # =====================================================
+    # FILTER REFERENCE
+    # =====================================================
+
     temp_ref = ref_df[
         ref_df['Business'] == business
     ].reset_index(drop=True)
@@ -107,7 +113,7 @@ for business in ref_df['Business'].dropna().unique():
     ).any()
 
     # =====================================================
-    # CG LOGIC
+    # CASE 1 : CG EXISTS
     # =====================================================
 
     if has_cg:
@@ -117,6 +123,10 @@ for business in ref_df['Business'].dropna().unique():
             filter_col = row['Filter Column']
 
             filter_val = row['Value']
+
+            # ------------------------------------------------
+            # START NEW DF WHEN CG COMES
+            # ------------------------------------------------
 
             if str(filter_val).startswith('CG'):
 
@@ -142,6 +152,10 @@ for business in ref_df['Business'].dropna().unique():
 
             all_parts.append(current_df)
 
+    # =====================================================
+    # CASE 2 : NO CG EXISTS
+    # =====================================================
+
     else:
 
         for _, row in temp_ref.iterrows():
@@ -158,7 +172,7 @@ for business in ref_df['Business'].dropna().unique():
             all_parts.append(temp_df)
 
     # =====================================================
-    # FINAL DF
+    # FINAL GENERATED DF
     # =====================================================
 
     generated_df = pd.concat(
@@ -167,7 +181,7 @@ for business in ref_df['Business'].dropna().unique():
     ).drop_duplicates()
 
     # =====================================================
-    # OUTPUT FILE
+    # FILE NAME
     # =====================================================
 
     safe_business = (
@@ -191,31 +205,98 @@ for business in ref_df['Business'].dropna().unique():
     )
 
     # =====================================================
-    # WRITE RAW DATA ONLY
-    # =====================================================
-
-    with pd.ExcelWriter(
-        output_file,
-        engine='openpyxl',
-        mode='a',
-        if_sheet_exists='replace'
-    ) as writer:
-
-        generated_df.to_excel(
-            writer,
-            sheet_name='Raw_Data',
-            index=False
-        )
-
-    # =====================================================
-    # REFRESH ON OPEN
+    # LOAD WORKBOOK
     # =====================================================
 
     wb = load_workbook(output_file)
 
+    ws = wb['Raw_Data']
+
+    # =====================================================
+    # CLEAR OLD DATA
+    # KEEP HEADER
+    # =====================================================
+
+    if ws.max_row > 1:
+
+        ws.delete_rows(
+            2,
+            ws.max_row
+        )
+
+    # =====================================================
+    # WRITE NEW DATA
+    # =====================================================
+
+    for row in generated_df.itertuples(index=False):
+
+        ws.append(list(row))
+
+    # =====================================================
+    # AUTO WIDTH
+    # =====================================================
+
+    for idx, col in enumerate(generated_df.columns, 1):
+
+        try:
+
+            max_len = max(
+                generated_df[col]
+                .astype(str)
+                .map(len)
+                .max(),
+                len(col)
+            ) + 3
+
+        except:
+
+            max_len = len(col) + 3
+
+        ws.column_dimensions[
+            get_column_letter(idx)
+        ].width = min(max_len, 60)
+
+    # =====================================================
+    # UPDATE TABLE RANGE
+    # =====================================================
+
+    max_row = generated_df.shape[0] + 1
+
+    max_col = generated_df.shape[1]
+
+    last_col_letter = get_column_letter(
+        max_col
+    )
+
+    new_range = (
+        f'A1:{last_col_letter}{max_row}'
+    )
+
+    table = ws.tables['RawTable']
+
+    table.ref = new_range
+
+    # =====================================================
+    # REFRESH PIVOTS ON OPEN
+    # =====================================================
+
+    for sheet in wb.worksheets:
+
+        for pivot in sheet._pivots:
+
+            pivot.cache.refreshOnLoad = True
+
+    # =====================================================
+    # FULL RECALCULATION
+    # =====================================================
+
     wb.calculation.fullCalcOnLoad = True
 
     wb.calculation.forceFullCalc = True
+
+    # =====================================================
+    # SAVE
+    # =====================================================
 
     wb.save(output_file)
 
