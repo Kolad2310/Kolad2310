@@ -213,8 +213,8 @@ for business in ref_df['Business'].dropna().unique():
     ws = wb['Raw_Data']
 
     # =====================================================
-    # CLEAR OLD DATA
-    # KEEP HEADER
+    # CLEAR OLD DATA ONLY
+    # KEEP HEADER + FORMATTING + TABLE
     # =====================================================
 
     if ws.max_row > 1:
@@ -228,33 +228,12 @@ for business in ref_df['Business'].dropna().unique():
     # WRITE NEW DATA
     # =====================================================
 
-    for row in generated_df.itertuples(index=False):
+    for row in generated_df.itertuples(
+        index=False,
+        name=None
+    ):
 
-        ws.append(list(row))
-
-    # =====================================================
-    # AUTO WIDTH
-    # =====================================================
-
-    for idx, col in enumerate(generated_df.columns, 1):
-
-        try:
-
-            max_len = max(
-                generated_df[col]
-                .astype(str)
-                .map(len)
-                .max(),
-                len(col)
-            ) + 3
-
-        except:
-
-            max_len = len(col) + 3
-
-        ws.column_dimensions[
-            get_column_letter(idx)
-        ].width = min(max_len, 60)
+        ws.append(row)
 
     # =====================================================
     # UPDATE TABLE RANGE
@@ -272,12 +251,10 @@ for business in ref_df['Business'].dropna().unique():
         f'A1:{last_col_letter}{max_row}'
     )
 
-    table = ws.tables['RawTable']
-
-    table.ref = new_range
+    ws.tables['RawTable'].ref = new_range
 
     # =====================================================
-    # REFRESH PIVOTS ON OPEN
+    # AUTO REFRESH PIVOTS ON OPEN
     # =====================================================
 
     for sheet in wb.worksheets:
@@ -287,12 +264,12 @@ for business in ref_df['Business'].dropna().unique():
             pivot.cache.refreshOnLoad = True
 
     # =====================================================
-    # FULL RECALCULATION
+    # AVOID FULL RECALCULATION
     # =====================================================
 
-    wb.calculation.fullCalcOnLoad = True
+    wb.calculation.fullCalcOnLoad = False
 
-    wb.calculation.forceFullCalc = True
+    wb.calculation.forceFullCalc = False
 
     # =====================================================
     # SAVE
