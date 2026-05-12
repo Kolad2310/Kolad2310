@@ -128,27 +128,25 @@ def apply_number_format(ws):
                 cell.number_format = '#,##0'
 
 
-def drop_all_zero_rows(df):
+def drop_all_zero_rows_pivot(df):
 
-    numeric_cols = df.select_dtypes(
+    numeric_df = df.select_dtypes(
         include='number'
-    ).columns
+    )
 
-    df = df[
-        ~(df[numeric_cols]
+    return df[
+        ~(numeric_df
           .fillna(0)
           .eq(0)
           .all(axis=1))
     ]
 
-    return df
-
 
 # =========================================================
-# ADD LEVEL 2 SUBTOTALS
+# ADD SUBTOTALS + GRAND TOTAL
 # =========================================================
 
-def add_level2_subtotals(df):
+def add_level_subtotals(df, subtotal_level=1):
 
     numeric_cols = df.select_dtypes(
         include='number'
@@ -156,76 +154,57 @@ def add_level2_subtotals(df):
 
     result = []
 
-    # ---------------------------------------------
-    # if multi index exists
-    # ---------------------------------------------
+    grouped = df.groupby(
+        level=list(range(subtotal_level + 1)),
+        sort=False
+    )
 
-    if isinstance(df.index, pd.MultiIndex):
+    for keys, grp in grouped:
 
-        level_names = df.index.names
+        result.append(grp)
 
-        # subtotal at level 2
-        level2_groups = df.groupby(
-            level=[0, 1],
-            sort=False
+        subtotal_vals = grp[numeric_cols].sum()
+
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+
+        subtotal_index = list(keys)
+
+        while len(subtotal_index) < len(df.index.names):
+            subtotal_index.append('')
+
+        subtotal_index[-1] = 'Subtotal'
+
+        subtotal_df = pd.DataFrame(
+            [subtotal_vals],
+            index=pd.MultiIndex.from_tuples(
+                [tuple(subtotal_index)],
+                names=df.index.names
+            )
         )
 
-        for keys, grp in level2_groups:
+        result.append(subtotal_df)
 
-            result.append(grp)
+    final_df = pd.concat(result)
 
-            subtotal = grp[numeric_cols].sum()
-
-            subtotal_index = list(keys)
-
-            while len(subtotal_index) < len(level_names):
-                subtotal_index.append('')
-
-            subtotal_index[-1] = 'Subtotal'
-
-            subtotal_df = pd.DataFrame(
-                [subtotal],
-                index=pd.MultiIndex.from_tuples(
-                    [tuple(subtotal_index)],
-                    names=level_names
-                )
-            )
-
-            result.append(subtotal_df)
-
-        final_df = pd.concat(result)
-
-    else:
-
-        final_df = df.copy()
-
-    # ---------------------------------------------
-    # grand total
-    # ---------------------------------------------
+    # =====================================================
+    # GRAND TOTAL
+    # =====================================================
 
     grand_total = final_df[numeric_cols].sum()
 
     grand_index = ['Grand Total']
 
-    if isinstance(final_df.index, pd.MultiIndex):
+    while len(grand_index) < len(df.index.names):
+        grand_index.append('')
 
-        while len(grand_index) < len(final_df.index.names):
-            grand_index.append('')
-
-        grand_total_df = pd.DataFrame(
-            [grand_total],
-            index=pd.MultiIndex.from_tuples(
-                [tuple(grand_index)],
-                names=final_df.index.names
-            )
+    grand_total_df = pd.DataFrame(
+        [grand_total],
+        index=pd.MultiIndex.from_tuples(
+            [tuple(grand_index)],
+            names=df.index.names
         )
-
-    else:
-
-        grand_total_df = pd.DataFrame(
-            [grand_total],
-            index=['Grand Total']
-        )
+    )
 
     final_df = pd.concat(
         [final_df, grand_total_df]
@@ -233,6 +212,10 @@ def add_level2_subtotals(df):
 
     return final_df
 
+
+# =========================================================
+# HEADER COLORING
+# =========================================================
 
 def color_headers(ws):
 
@@ -278,6 +261,10 @@ def color_headers(ws):
             cell.font = HEADER_FONT
 
 
+# =========================================================
+# LEFT ALIGN INDEX COLUMNS
+# =========================================================
+
 def left_align_index_columns(ws):
 
     if ws.title == 'Raw_Data':
@@ -292,6 +279,10 @@ def left_align_index_columns(ws):
                 column=col
             ).alignment = LEFT_ALIGN
 
+
+# =========================================================
+# HIGHLIGHT SUBTOTALS
+# =========================================================
 
 def highlight_subtotals(ws):
 
@@ -430,6 +421,57 @@ for business in ref_df['Business'].dropna().unique():
     )
 
     # =====================================================
+    # GENERIC PIVOT FUNCTION
+    # =====================================================
+
+    def build_view(
+        source_df,
+        index_cols,
+        value_cols
+    ):
+
+        pivot_df = source_df.pivot_table(
+            index=index_cols,
+            columns='Source_sys',
+            values=value_cols,
+            aggfunc='sum',
+            fill_value=0
+        )
+
+        for sec in value_cols:
+
+            pivot_df[(f'{sec}_var', 'BFA_vs_CVUK')] = (
+                pivot_df.get((sec, 'BFA'), 0)
+                + pivot_df.get((sec, 'CVUK'), 0)
+            )
+
+            pivot_df[(f'{sec}_var', 'BFA_vs_GRC')] = (
+                pivot_df.get((sec, 'BFA'), 0)
+                + pivot_df.get((sec, 'GRC'), 0)
+            )
+
+            pivot_df[(f'{sec}_var', 'GRC_vs_CVUK')] = (
+                pivot_df.get((sec, 'GRC'), 0)
+                - pivot_df.get((sec, 'CVUK'), 0)
+            )
+
+        pivot_df = drop_all_zero_rows_pivot(
+            pivot_df
+        )
+
+        subtotal_level = min(
+            1,
+            len(index_cols) - 1
+        )
+
+        pivot_df = add_level_subtotals(
+            pivot_df,
+            subtotal_level=subtotal_level
+        )
+
+        return pivot_df
+
+    # =====================================================
     # P&L VIEW
     # =====================================================
 
@@ -440,40 +482,15 @@ for business in ref_df['Business'].dropna().unique():
         )
     ]
 
-    mica_view_pl = df4_pl.pivot_table(
-        index=[
+    mica_view_pl = build_view(
+        df4_pl,
+        [
             'Level1_mica_desc',
             'Level3_mica_desc',
             'Level8_mica_desc',
             'Level9_mica_desc'
         ],
-        columns='Source_sys',
-        values=['P&L'],
-        aggfunc='sum',
-        fill_value=0
-    )
-
-    mica_view_pl[('P&L_var', 'BFA_vs_CVUK')] = (
-        mica_view_pl.get(('P&L', 'BFA'), 0)
-        + mica_view_pl.get(('P&L', 'CVUK'), 0)
-    )
-
-    mica_view_pl[('P&L_var', 'BFA_vs_GRC')] = (
-        mica_view_pl.get(('P&L', 'BFA'), 0)
-        + mica_view_pl.get(('P&L', 'GRC'), 0)
-    )
-
-    mica_view_pl[('P&L_var', 'GRC_vs_CVUK')] = (
-        mica_view_pl.get(('P&L', 'GRC'), 0)
-        - mica_view_pl.get(('P&L', 'CVUK'), 0)
-    )
-
-    mica_view_pl = drop_all_zero_rows(
-        mica_view_pl
-    )
-
-    mica_view_pl = add_level2_subtotals(
-        mica_view_pl
+        ['P&L']
     )
 
     # =====================================================
@@ -487,39 +504,14 @@ for business in ref_df['Business'].dropna().unique():
         )
     ]
 
-    mica_view_bs = df4_bs.pivot_table(
-        index=[
+    mica_view_bs = build_view(
+        df4_bs,
+        [
             'Level1_mica_desc',
             'Level2_mica_desc',
             'Level3_mica_desc'
         ],
-        columns='Source_sys',
-        values=['BS'],
-        aggfunc='sum',
-        fill_value=0
-    )
-
-    mica_view_bs[('BS_var', 'BFA_vs_CVUK')] = (
-        mica_view_bs.get(('BS', 'BFA'), 0)
-        + mica_view_bs.get(('BS', 'CVUK'), 0)
-    )
-
-    mica_view_bs[('BS_var', 'BFA_vs_GRC')] = (
-        mica_view_bs.get(('BS', 'BFA'), 0)
-        + mica_view_bs.get(('BS', 'GRC'), 0)
-    )
-
-    mica_view_bs[('BS_var', 'GRC_vs_CVUK')] = (
-        mica_view_bs.get(('BS', 'GRC'), 0)
-        - mica_view_bs.get(('BS', 'CVUK'), 0)
-    )
-
-    mica_view_bs = drop_all_zero_rows(
-        mica_view_bs
-    )
-
-    mica_view_bs = add_level2_subtotals(
-        mica_view_bs
+        ['BS']
     )
 
     # =====================================================
@@ -533,39 +525,41 @@ for business in ref_df['Business'].dropna().unique():
         )
     ]
 
-    mica_view_avb = df4_avb.pivot_table(
-        index=[
+    mica_view_avb = build_view(
+        df4_avb,
+        [
             'Level1_mica_desc',
             'Level2_mica_desc',
             'Level3_mica_desc'
         ],
-        columns='Source_sys',
-        values=['AVB'],
-        aggfunc='sum',
-        fill_value=0
+        ['AVB']
     )
 
-    mica_view_avb[('AVB_var', 'BFA_vs_CVUK')] = (
-        mica_view_avb.get(('AVB', 'BFA'), 0)
-        + mica_view_avb.get(('AVB', 'CVUK'), 0)
+    # =====================================================
+    # MI FUNCTION VIEW
+    # =====================================================
+
+    mifunc_view = build_view(
+        generated_df,
+        [
+            'Consolidated Period Mi Function Code',
+            'Function Leaf Description',
+            'Function Level 3',
+            'Function Description'
+        ],
+        ['AVB', 'BS', 'P&L']
     )
 
-    mica_view_avb[('AVB_var', 'BFA_vs_GRC')] = (
-        mica_view_avb.get(('AVB', 'BFA'), 0)
-        + mica_view_avb.get(('AVB', 'GRC'), 0)
-    )
+    # =====================================================
+    # ENTITY VIEW
+    # =====================================================
 
-    mica_view_avb[('AVB_var', 'GRC_vs_CVUK')] = (
-        mica_view_avb.get(('AVB', 'GRC'), 0)
-        - mica_view_avb.get(('AVB', 'CVUK'), 0)
-    )
-
-    mica_view_avb = drop_all_zero_rows(
-        mica_view_avb
-    )
-
-    mica_view_avb = add_level2_subtotals(
-        mica_view_avb
+    entity_view = build_view(
+        generated_df,
+        [
+            'Consolidated Period Entity ID'
+        ],
+        ['AVB', 'BS', 'P&L']
     )
 
     # =====================================================
@@ -616,8 +610,20 @@ for business in ref_df['Business'].dropna().unique():
             index=True
         )
 
+        mifunc_view.to_excel(
+            writer,
+            sheet_name='MI_Func_RTNs',
+            index=True
+        )
+
+        entity_view.to_excel(
+            writer,
+            sheet_name='Entity_View',
+            index=True
+        )
+
         # =================================================
-        # FORMAT SHEETS
+        # FORMAT ALL SHEETS
         # =================================================
 
         for sheet in writer.book.sheetnames:
