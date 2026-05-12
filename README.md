@@ -5,7 +5,11 @@ import os
 from datetime import datetime
 
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import PatternFill, Font
+from openpyxl.styles import (
+    PatternFill,
+    Font,
+    Alignment
+)
 
 # =========================================================
 # READ REFERENCE FILE
@@ -55,6 +59,10 @@ AVB_HEADER_FILL = PatternFill(
 
 HEADER_FONT = Font(
     bold=True
+)
+
+LEFT_ALIGN = Alignment(
+    horizontal='left'
 )
 
 # =========================================================
@@ -117,37 +125,119 @@ def add_grand_total(df):
         include='number'
     ).columns
 
-    total_row = df[numeric_cols].sum()
+    total_row = {}
 
-    total_df = pd.DataFrame(
-        [total_row],
-        index=['Grand Total']
+    for col in df.columns:
+
+        if col in numeric_cols:
+
+            total_row[col] = df[col].sum()
+
+        else:
+
+            total_row[col] = ''
+
+    total_row[df.columns[0]] = 'Grand Total'
+
+    total_df = pd.DataFrame([total_row])
+
+    df = pd.concat(
+        [df, total_df],
+        ignore_index=True
     )
-
-    df = pd.concat([df, total_df])
 
     return df
 
 
-def color_headers(ws, fill):
+def drop_all_zero_rows(df):
 
-    # raw data
+    numeric_cols = df.select_dtypes(
+        include='number'
+    ).columns
+
+    df = df[
+        ~(df[numeric_cols]
+          .fillna(0)
+          .eq(0)
+          .all(axis=1))
+    ]
+
+    return df
+
+
+def color_headers(ws):
+
+    # =====================================================
+    # RAW DATA
+    # =====================================================
+
     if ws.title == 'Raw_Data':
 
         for cell in ws[1]:
 
-            cell.fill = fill
+            cell.fill = RAW_HEADER_FILL
             cell.font = HEADER_FONT
 
-    else:
+        return
 
-        # pivots
-        for row in [1, 2]:
+    # =====================================================
+    # PIVOT TABLES
+    # =====================================================
 
-            for cell in ws[row]:
+    for row in [1, 2]:
 
-                cell.fill = fill
-                cell.font = HEADER_FONT
+        for cell in ws[row]:
+
+            value = str(cell.value)
+
+            # ------------------------------------------------
+            # P&L
+            # ------------------------------------------------
+
+            if 'P&L' in value:
+
+                cell.fill = PL_HEADER_FILL
+
+            # ------------------------------------------------
+            # BS
+            # ------------------------------------------------
+
+            elif 'BS' in value:
+
+                cell.fill = BS_HEADER_FILL
+
+            # ------------------------------------------------
+            # AVB
+            # ------------------------------------------------
+
+            elif 'AVB' in value:
+
+                cell.fill = AVB_HEADER_FILL
+
+            # ------------------------------------------------
+            # INDEX / OTHER
+            # ------------------------------------------------
+
+            else:
+
+                cell.fill = RAW_HEADER_FILL
+
+            cell.font = HEADER_FONT
+
+
+def left_align_index_columns(ws):
+
+    # =====================================================
+    # LEFT ALIGN NON NUMERIC COLUMNS
+    # =====================================================
+
+    for row in ws.iter_rows():
+
+        for cell in row:
+
+            if isinstance(cell.value, str):
+
+                cell.alignment = LEFT_ALIGN
 
 
 # =========================================================
@@ -159,7 +249,7 @@ for business in ref_df['Business'].dropna().unique():
     print(f'Processing : {business}')
 
     # =====================================================
-    # FILTER REFERENCE
+    # FILTER REF
     # =====================================================
 
     temp_ref = ref_df[
@@ -171,7 +261,7 @@ for business in ref_df['Business'].dropna().unique():
     current_df = None
 
     # =====================================================
-    # CHECK IF CG EXISTS
+    # CHECK CG EXISTS
     # =====================================================
 
     has_cg = temp_ref['Value'].astype(str).str.startswith(
@@ -328,6 +418,12 @@ for business in ref_df['Business'].dropna().unique():
             - mica_view_pl.get((sec, 'CVUK'), 0)
         )
 
+    mica_view_pl = mica_view_pl.reset_index()
+
+    mica_view_pl = drop_all_zero_rows(
+        mica_view_pl
+    )
+
     mica_view_pl = add_grand_total(
         mica_view_pl
     )
@@ -371,6 +467,12 @@ for business in ref_df['Business'].dropna().unique():
             mica_view_bs.get((sec, 'GRC'), 0)
             - mica_view_bs.get((sec, 'CVUK'), 0)
         )
+
+    mica_view_bs = mica_view_bs.reset_index()
+
+    mica_view_bs = drop_all_zero_rows(
+        mica_view_bs
+    )
 
     mica_view_bs = add_grand_total(
         mica_view_bs
@@ -416,6 +518,12 @@ for business in ref_df['Business'].dropna().unique():
             - mica_view_avb.get((sec, 'CVUK'), 0)
         )
 
+    mica_view_avb = mica_view_avb.reset_index()
+
+    mica_view_avb = drop_all_zero_rows(
+        mica_view_avb
+    )
+
     mica_view_avb = add_grand_total(
         mica_view_avb
     )
@@ -454,6 +562,12 @@ for business in ref_df['Business'].dropna().unique():
             - mifunc_view.get((sec, 'CVUK'), 0)
         )
 
+    mifunc_view = mifunc_view.reset_index()
+
+    mifunc_view = drop_all_zero_rows(
+        mifunc_view
+    )
+
     mifunc_view = add_grand_total(
         mifunc_view
     )
@@ -488,6 +602,12 @@ for business in ref_df['Business'].dropna().unique():
             entity_view.get((sec, 'GRC'), 0)
             - entity_view.get((sec, 'CVUK'), 0)
         )
+
+    entity_view = entity_view.reset_index()
+
+    entity_view = drop_all_zero_rows(
+        entity_view
+    )
 
     entity_view = add_grand_total(
         entity_view
@@ -525,27 +645,32 @@ for business in ref_df['Business'].dropna().unique():
 
         mica_view_pl.to_excel(
             writer,
-            sheet_name='MICA_View_PL'
+            sheet_name='MICA_View_PL',
+            index=False
         )
 
         mica_view_bs.to_excel(
             writer,
-            sheet_name='MICA_View_BS'
+            sheet_name='MICA_View_BS',
+            index=False
         )
 
         mica_view_avb.to_excel(
             writer,
-            sheet_name='MICA_View_AVB'
+            sheet_name='MICA_View_AVB',
+            index=False
         )
 
         mifunc_view.to_excel(
             writer,
-            sheet_name='MI_Func_RTNs'
+            sheet_name='MI_Func_RTNs',
+            index=False
         )
 
         entity_view.to_excel(
             writer,
-            sheet_name='Entity_View'
+            sheet_name='Entity_View',
+            index=False
         )
 
         # =================================================
@@ -560,44 +685,9 @@ for business in ref_df['Business'].dropna().unique():
 
             apply_number_format(ws)
 
-            # =============================================
-            # HEADER COLORS
-            # =============================================
+            color_headers(ws)
 
-            if sheet == 'Raw_Data':
-
-                color_headers(
-                    ws,
-                    RAW_HEADER_FILL
-                )
-
-            elif 'PL' in sheet:
-
-                color_headers(
-                    ws,
-                    PL_HEADER_FILL
-                )
-
-            elif 'BS' in sheet:
-
-                color_headers(
-                    ws,
-                    BS_HEADER_FILL
-                )
-
-            elif 'AVB' in sheet:
-
-                color_headers(
-                    ws,
-                    AVB_HEADER_FILL
-                )
-
-            else:
-
-                color_headers(
-                    ws,
-                    RAW_HEADER_FILL
-                )
+            left_align_index_columns(ws)
 
     print(f'Created : {output_file}')
 
