@@ -2,7 +2,16 @@
 import pandas as pd
 import numpy as np
 import os
+import shutil
+
 from datetime import datetime
+from openpyxl import load_workbook
+
+# =========================================================
+# TEMPLATE FILE
+# =========================================================
+
+template_file = r'Pivot_Template.xlsx'
 
 # =========================================================
 # READ REFERENCE FILE
@@ -77,16 +86,12 @@ df4['Level9_mica_desc'] = (
 )
 
 # =========================================================
-# LOOP BUSINESS
+# BUSINESS LOOP
 # =========================================================
 
 for business in ref_df['Business'].dropna().unique():
 
     print(f'Processing : {business}')
-
-    # =====================================================
-    # FILTER REFERENCE
-    # =====================================================
 
     temp_ref = ref_df[
         ref_df['Business'] == business
@@ -102,7 +107,7 @@ for business in ref_df['Business'].dropna().unique():
     ).any()
 
     # =====================================================
-    # CASE 1 : CG EXISTS
+    # CG LOGIC
     # =====================================================
 
     if has_cg:
@@ -112,10 +117,6 @@ for business in ref_df['Business'].dropna().unique():
             filter_col = row['Filter Column']
 
             filter_val = row['Value']
-
-            # ------------------------------------------------
-            # START NEW DF WHEN CG COMES
-            # ------------------------------------------------
 
             if str(filter_val).startswith('CG'):
 
@@ -140,10 +141,6 @@ for business in ref_df['Business'].dropna().unique():
         if current_df is not None:
 
             all_parts.append(current_df)
-
-    # =====================================================
-    # CASE 2 : NO CG EXISTS
-    # =====================================================
 
     else:
 
@@ -170,7 +167,7 @@ for business in ref_df['Business'].dropna().unique():
     ).drop_duplicates()
 
     # =====================================================
-    # FILE NAME
+    # OUTPUT FILE
     # =====================================================
 
     safe_business = (
@@ -185,17 +182,24 @@ for business in ref_df['Business'].dropna().unique():
     )
 
     # =====================================================
-    # WRITE EXCEL
+    # COPY TEMPLATE
+    # =====================================================
+
+    shutil.copy(
+        template_file,
+        output_file
+    )
+
+    # =====================================================
+    # WRITE RAW DATA ONLY
     # =====================================================
 
     with pd.ExcelWriter(
         output_file,
-        engine='xlsxwriter'
+        engine='openpyxl',
+        mode='a',
+        if_sheet_exists='replace'
     ) as writer:
-
-        # =================================================
-        # RAW DATA
-        # =================================================
 
         generated_df.to_excel(
             writer,
@@ -203,225 +207,17 @@ for business in ref_df['Business'].dropna().unique():
             index=False
         )
 
-        workbook = writer.book
+    # =====================================================
+    # REFRESH ON OPEN
+    # =====================================================
 
-        raw_ws = writer.sheets['Raw_Data']
+    wb = load_workbook(output_file)
 
-        # =================================================
-        # FORMATS
-        # =================================================
+    wb.calculation.fullCalcOnLoad = True
 
-        grey_header = workbook.add_format({
-            'bold': True,
-            'bg_color': '#BFBFBF',
-            'border': 1
-        })
+    wb.calculation.forceFullCalc = True
 
-        number_format = workbook.add_format({
-            'num_format': '#,##0'
-        })
-
-        # =================================================
-        # AUTO WIDTH
-        # =================================================
-
-        for idx, col in enumerate(generated_df.columns):
-
-            try:
-
-                max_len = max(
-                    generated_df[col]
-                    .astype(str)
-                    .map(len)
-                    .max(),
-                    len(col)
-                ) + 3
-
-            except:
-
-                max_len = len(col) + 3
-
-            raw_ws.set_column(
-                idx,
-                idx,
-                min(max_len, 60)
-            )
-
-        # =================================================
-        # HEADER FORMAT
-        # =================================================
-
-        for col_num, value in enumerate(generated_df.columns):
-
-            raw_ws.write(
-                0,
-                col_num,
-                value,
-                grey_header
-            )
-
-        # =================================================
-        # NUMBER FORMAT
-        # =================================================
-
-        numeric_cols = generated_df.select_dtypes(
-            include='number'
-        ).columns
-
-        for col in numeric_cols:
-
-            col_idx = generated_df.columns.get_loc(col)
-
-            raw_ws.set_column(
-                col_idx,
-                col_idx,
-                None,
-                number_format
-            )
-
-        # =================================================
-        # CREATE EXCEL TABLE
-        # =================================================
-
-        rows, cols = generated_df.shape
-
-        raw_ws.add_table(
-            0,
-            0,
-            rows,
-            cols - 1,
-            {
-                'name': 'RawTable',
-                'columns': [
-                    {'header': c}
-                    for c in generated_df.columns
-                ],
-                'style': 'Table Style Medium 2'
-            }
-        )
-
-        # =================================================
-        # CREATE EMPTY SHEETS
-        # =================================================
-
-        workbook.add_worksheet('MICA_View_PL')
-        workbook.add_worksheet('MICA_View_BS')
-        workbook.add_worksheet('MICA_View_AVB')
-        workbook.add_worksheet('MI_Func_RTNs')
-        workbook.add_worksheet('Entity_View')
-
-        # =================================================
-        # INSTRUCTIONS SHEET
-        # =================================================
-
-        instruction_ws = workbook.add_worksheet(
-            'Pivot_Instructions'
-        )
-
-        instruction_text = [
-
-            'THIS FILE CONTAINS DYNAMIC EXCEL TABLES',
-            '',
-            'TO CREATE / REFRESH PIVOTS:',
-            '',
-            '1. Open Raw_Data sheet',
-            '2. Click anywhere inside the table',
-            '3. Insert -> Pivot Table',
-            '4. Select Existing Worksheet',
-            '',
-            'P&L VIEW',
-            'Rows:',
-            '- Level1_mica_desc',
-            '- Level3_mica_desc',
-            '- Level8_mica_desc',
-            '- Level9_mica_desc',
-            '',
-            'Columns:',
-            '- Source_sys',
-            '',
-            'Values:',
-            '- Sum of P&L',
-            '',
-            'Filter:',
-            '- Scope',
-            '',
-            'BS VIEW',
-            'Rows:',
-            '- Level1_mica_desc',
-            '- Level2_mica_desc',
-            '- Level3_mica_desc',
-            '',
-            'Columns:',
-            '- Source_sys',
-            '',
-            'Values:',
-            '- Sum of BS',
-            '',
-            'Filter:',
-            '- Scope',
-            '',
-            'AVB VIEW',
-            'Rows:',
-            '- Level1_mica_desc',
-            '- Level2_mica_desc',
-            '- Level3_mica_desc',
-            '',
-            'Columns:',
-            '- Source_sys',
-            '',
-            'Values:',
-            '- Sum of AVB',
-            '',
-            'Filter:',
-            '- Scope',
-            '',
-            'MI FUNCTION VIEW',
-            'Rows:',
-            '- Consolidated Period Mi Function Code',
-            '- Function Leaf Description',
-            '- Function Level 3',
-            '- Function Description',
-            '',
-            'Columns:',
-            '- Source_sys',
-            '',
-            'Values:',
-            '- Sum of AVB',
-            '- Sum of BS',
-            '- Sum of P&L',
-            '',
-            'Filter:',
-            '- Scope',
-            '',
-            'ENTITY VIEW',
-            'Rows:',
-            '- Consolidated Period Entity ID',
-            '',
-            'Columns:',
-            '- Source_sys',
-            '',
-            'Values:',
-            '- Sum of AVB',
-            '- Sum of BS',
-            '- Sum of P&L',
-            '',
-            'Filter:',
-            '- Scope'
-        ]
-
-        for row_num, line in enumerate(instruction_text):
-
-            instruction_ws.write(
-                row_num,
-                0,
-                line
-            )
-
-        instruction_ws.set_column(
-            0,
-            0,
-            60
-        )
+    wb.save(output_file)
 
     print(f'Created : {output_file}')
 
