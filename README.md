@@ -4,8 +4,6 @@ import numpy as np
 import os
 from datetime import datetime
 
-import win32com.client as win32
-
 # =========================================================
 # READ REFERENCE FILE
 # =========================================================
@@ -79,12 +77,16 @@ df4['Level9_mica_desc'] = (
 )
 
 # =========================================================
-# GENERATE BUSINESS LEVEL DATAFRAMES
+# LOOP BUSINESS
 # =========================================================
 
 for business in ref_df['Business'].dropna().unique():
 
     print(f'Processing : {business}')
+
+    # =====================================================
+    # FILTER REFERENCE
+    # =====================================================
 
     temp_ref = ref_df[
         ref_df['Business'] == business
@@ -100,7 +102,7 @@ for business in ref_df['Business'].dropna().unique():
     ).any()
 
     # =====================================================
-    # CG LOGIC
+    # CASE 1 : CG EXISTS
     # =====================================================
 
     if has_cg:
@@ -110,6 +112,10 @@ for business in ref_df['Business'].dropna().unique():
             filter_col = row['Filter Column']
 
             filter_val = row['Value']
+
+            # ------------------------------------------------
+            # START NEW DF WHEN CG COMES
+            # ------------------------------------------------
 
             if str(filter_val).startswith('CG'):
 
@@ -134,6 +140,10 @@ for business in ref_df['Business'].dropna().unique():
         if current_df is not None:
 
             all_parts.append(current_df)
+
+    # =====================================================
+    # CASE 2 : NO CG EXISTS
+    # =====================================================
 
     else:
 
@@ -175,13 +185,17 @@ for business in ref_df['Business'].dropna().unique():
     )
 
     # =====================================================
-    # WRITE RAW DATA
+    # WRITE EXCEL
     # =====================================================
 
     with pd.ExcelWriter(
         output_file,
         engine='xlsxwriter'
     ) as writer:
+
+        # =================================================
+        # RAW DATA
+        # =================================================
 
         generated_df.to_excel(
             writer,
@@ -230,14 +244,14 @@ for business in ref_df['Business'].dropna().unique():
             raw_ws.set_column(
                 idx,
                 idx,
-                min(max_len, 50)
+                min(max_len, 60)
             )
 
         # =================================================
         # HEADER FORMAT
         # =================================================
 
-        for col_num, value in enumerate(generated_df.columns.values):
+        for col_num, value in enumerate(generated_df.columns):
 
             raw_ws.write(
                 0,
@@ -296,221 +310,118 @@ for business in ref_df['Business'].dropna().unique():
         workbook.add_worksheet('MI_Func_RTNs')
         workbook.add_worksheet('Entity_View')
 
-    # =====================================================
-    # CREATE REAL EXCEL PIVOTS
-    # =====================================================
+        # =================================================
+        # INSTRUCTIONS SHEET
+        # =================================================
 
-    excel = win32.gencache.EnsureDispatch(
-        'Excel.Application'
-    )
-
-    excel.Visible = False
-
-    excel.DisplayAlerts = False
-
-    wb = excel.Workbooks.Open(
-        os.path.abspath(output_file)
-    )
-
-    # =====================================================
-    # PIVOT CACHE
-    # =====================================================
-
-    pivot_cache = wb.PivotCaches().Create(
-        SourceType=1,
-        SourceData='RawTable'
-    )
-
-    # =====================================================
-    # PIVOT HELPER FUNCTION
-    # =====================================================
-
-    def create_pivot(
-        sheet_name,
-        rows,
-        columns,
-        values
-    ):
-
-        ws = wb.Sheets(sheet_name)
-
-        pivot_table = pivot_cache.CreatePivotTable(
-            TableDestination=f'{sheet_name}!R3C1',
-            TableName=f'Pivot_{sheet_name}'
+        instruction_ws = workbook.add_worksheet(
+            'Pivot_Instructions'
         )
 
-        # =================================================
-        # FILTER
-        # =================================================
+        instruction_text = [
 
-        pivot_table.PivotFields(
-            'Scope'
-        ).Orientation = 3
+            'THIS FILE CONTAINS DYNAMIC EXCEL TABLES',
+            '',
+            'TO CREATE / REFRESH PIVOTS:',
+            '',
+            '1. Open Raw_Data sheet',
+            '2. Click anywhere inside the table',
+            '3. Insert -> Pivot Table',
+            '4. Select Existing Worksheet',
+            '',
+            'P&L VIEW',
+            'Rows:',
+            '- Level1_mica_desc',
+            '- Level3_mica_desc',
+            '- Level8_mica_desc',
+            '- Level9_mica_desc',
+            '',
+            'Columns:',
+            '- Source_sys',
+            '',
+            'Values:',
+            '- Sum of P&L',
+            '',
+            'Filter:',
+            '- Scope',
+            '',
+            'BS VIEW',
+            'Rows:',
+            '- Level1_mica_desc',
+            '- Level2_mica_desc',
+            '- Level3_mica_desc',
+            '',
+            'Columns:',
+            '- Source_sys',
+            '',
+            'Values:',
+            '- Sum of BS',
+            '',
+            'Filter:',
+            '- Scope',
+            '',
+            'AVB VIEW',
+            'Rows:',
+            '- Level1_mica_desc',
+            '- Level2_mica_desc',
+            '- Level3_mica_desc',
+            '',
+            'Columns:',
+            '- Source_sys',
+            '',
+            'Values:',
+            '- Sum of AVB',
+            '',
+            'Filter:',
+            '- Scope',
+            '',
+            'MI FUNCTION VIEW',
+            'Rows:',
+            '- Consolidated Period Mi Function Code',
+            '- Function Leaf Description',
+            '- Function Level 3',
+            '- Function Description',
+            '',
+            'Columns:',
+            '- Source_sys',
+            '',
+            'Values:',
+            '- Sum of AVB',
+            '- Sum of BS',
+            '- Sum of P&L',
+            '',
+            'Filter:',
+            '- Scope',
+            '',
+            'ENTITY VIEW',
+            'Rows:',
+            '- Consolidated Period Entity ID',
+            '',
+            'Columns:',
+            '- Source_sys',
+            '',
+            'Values:',
+            '- Sum of AVB',
+            '- Sum of BS',
+            '- Sum of P&L',
+            '',
+            'Filter:',
+            '- Scope'
+        ]
 
-        pivot_table.PivotFields(
-            'Scope'
-        ).Position = 1
+        for row_num, line in enumerate(instruction_text):
 
-        # =================================================
-        # ROWS
-        # =================================================
-
-        for idx, row_field in enumerate(rows):
-
-            pivot_table.PivotFields(
-                row_field
-            ).Orientation = 1
-
-            pivot_table.PivotFields(
-                row_field
-            ).Position = idx + 1
-
-        # =================================================
-        # COLUMNS
-        # =================================================
-
-        for idx, col_field in enumerate(columns):
-
-            pivot_table.PivotFields(
-                col_field
-            ).Orientation = 2
-
-            pivot_table.PivotFields(
-                col_field
-            ).Position = idx + 1
-
-        # =================================================
-        # VALUES
-        # =================================================
-
-        for value_field in values:
-
-            pivot_table.AddDataField(
-                pivot_table.PivotFields(value_field),
-                f'Sum of {value_field}',
-                -4157
+            instruction_ws.write(
+                row_num,
+                0,
+                line
             )
 
-        # =================================================
-        # PIVOT STYLE
-        # =================================================
-
-        pivot_table.RowAxisLayout(1)
-
-        pivot_table.RepeatAllLabels(2)
-
-        pivot_table.ShowTableStyleRowStripes = True
-
-    # =====================================================
-    # P&L PIVOT
-    # =====================================================
-
-    create_pivot(
-        'MICA_View_PL',
-        rows=[
-            'Level1_mica_desc',
-            'Level3_mica_desc',
-            'Level8_mica_desc',
-            'Level9_mica_desc'
-        ],
-        columns=[
-            'Source_sys'
-        ],
-        values=[
-            'P&L'
-        ]
-    )
-
-    # =====================================================
-    # BS PIVOT
-    # =====================================================
-
-    create_pivot(
-        'MICA_View_BS',
-        rows=[
-            'Level1_mica_desc',
-            'Level2_mica_desc',
-            'Level3_mica_desc'
-        ],
-        columns=[
-            'Source_sys'
-        ],
-        values=[
-            'BS'
-        ]
-    )
-
-    # =====================================================
-    # AVB PIVOT
-    # =====================================================
-
-    create_pivot(
-        'MICA_View_AVB',
-        rows=[
-            'Level1_mica_desc',
-            'Level2_mica_desc',
-            'Level3_mica_desc'
-        ],
-        columns=[
-            'Source_sys'
-        ],
-        values=[
-            'AVB'
-        ]
-    )
-
-    # =====================================================
-    # MI FUNCTION PIVOT
-    # =====================================================
-
-    create_pivot(
-        'MI_Func_RTNs',
-        rows=[
-            'Consolidated Period Mi Function Code',
-            'Function Leaf Description',
-            'Function Level 3',
-            'Function Description'
-        ],
-        columns=[
-            'Source_sys'
-        ],
-        values=[
-            'AVB',
-            'BS',
-            'P&L'
-        ]
-    )
-
-    # =====================================================
-    # ENTITY PIVOT
-    # =====================================================
-
-    create_pivot(
-        'Entity_View',
-        rows=[
-            'Consolidated Period Entity ID'
-        ],
-        columns=[
-            'Source_sys'
-        ],
-        values=[
-            'AVB',
-            'BS',
-            'P&L'
-        ]
-    )
-
-    # =====================================================
-    # REFRESH + SAVE
-    # =====================================================
-
-    wb.RefreshAll()
-
-    wb.Save()
-
-    wb.Close()
-
-    excel.Quit()
+        instruction_ws.set_column(
+            0,
+            0,
+            60
+        )
 
     print(f'Created : {output_file}')
 
