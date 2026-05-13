@@ -1,117 +1,149 @@
 ```
-# =====================================================
-# GENERATE DIFFERENT DATAFRAMES DYNAMICALLY
-# =====================================================
+# =========================================================
+# AGGREGATE LEVEL 1
+# =========================================================
 
-generated_df_names = []
+level1 = df.groupby('Label', as_index=False).agg({
+    'YTD_2026': 'sum',
+    'YTD_Monthly_Target_2026': 'sum',
+    'FY_Forecast_2026': 'sum',
+    'FY_Target_2026': 'sum'
+})
 
-for business in ref_df['Business'].dropna().unique():
+commentaries = []
 
-    print(f'Processing : {business}')
+# =========================================================
+# FORMAT FUNCTION
+# =========================================================
 
-    temp_ref = ref_df[
-        ref_df['Business'] == business
-    ].reset_index(drop=True)
+def format_value(value, label):
 
-    all_parts = []
+    # CLIENT REFERRALS -> WHOLE NUMBER
+    if label == 'IWPB Client Referrals':
+        return f"{value:,.0f}"
 
-    current_df = None
+    # ALL OTHERS -> $ + m
+    return f"${value:,.1f}m"
 
-    has_cg = temp_ref['Value'].astype(str).str.startswith(
-        'CG',
-        na=False
-    ).any()
 
-    # =================================================
-    # CASE 1 : CG EXISTS
-    # =================================================
+# =========================================================
+# GENERATE COMMENTARY
+# =========================================================
 
-    if has_cg:
+for _, row in level1.iterrows():
 
-        for _, row in temp_ref.iterrows():
+    label = row['Label']
 
-            filter_col = row['Filter Column']
+    ytd_actual = row['YTD_2026']
+    ytd_target = row['YTD_Monthly_Target_2026']
 
-            filter_val = row['Value']
+    fy_fcst = row['FY_Forecast_2026']
+    fy_target = row['FY_Target_2026']
 
-            if str(filter_val).startswith('CG'):
+    # =====================================================
+    # YTD VARIANCE
+    # =====================================================
 
-                if current_df is not None:
+    ytd_var = ytd_actual - ytd_target
 
-                    all_parts.append(current_df)
+    ytd_pct = (
+        (ytd_var / ytd_target) * 100
+        if ytd_target != 0 else 0
+    )
 
-                current_df = df4[
-                    df4[filter_col].astype(str)
-                    == str(filter_val)
-                ].copy()
+    if ytd_var >= 0:
 
-            else:
-
-                if current_df is not None:
-
-                    current_df = current_df[
-                        current_df[filter_col].astype(str)
-                        == str(filter_val)
-                    ]
-
-        if current_df is not None:
-
-            all_parts.append(current_df)
-
-    # =================================================
-    # CASE 2 : NO CG EXISTS
-    # =================================================
+        ytd_status = 'above'
+        sort_ascending = False
+        offset_word = 'partly offset by'
 
     else:
 
-        for _, row in temp_ref.iterrows():
+        ytd_status = 'below'
+        sort_ascending = True
+        offset_word = 'partly onset by'
 
-            filter_col = row['Filter Column']
+    # =====================================================
+    # COUNTRY DRIVERS
+    # =====================================================
 
-            filter_val = row['Value']
+    temp = df[df['Label'] == label].copy()
 
-            temp_df = df4[
-                df4[filter_col].astype(str)
-                == str(filter_val)
-            ].copy()
-
-            all_parts.append(temp_df)
-
-    # =================================================
-    # FINAL GENERATED DF
-    # =================================================
-
-    generated_df = pd.concat(
-        all_parts,
-        ignore_index=True
-    ).drop_duplicates()
-
-    # =================================================
-    # DATAFRAME NAME
-    # =================================================
-
-    df_name = (
-        str(business)
-        .replace('/', '_')
-        .replace('\\', '_')
-        .replace(' ', '_')
-        .replace('-', '_')
+    temp['YTD_VAR'] = (
+        temp['YTD_2026']
+        - temp['YTD_Monthly_Target_2026']
     )
 
-    # =================================================
-    # CREATE DATAFRAME VARIABLE
-    # =================================================
+    temp = temp.sort_values(
+        'YTD_VAR',
+        ascending=sort_ascending
+    )
 
-    globals()[df_name] = generated_df
+    # MAIN DRIVER
+    top_country = temp.iloc[0]['Country']
 
-    generated_df_names.append(df_name)
+    # OFFSET COUNTRY
+    offset_country = ''
 
-# =====================================================
-# PRINT ALL GENERATED DATAFRAME NAMES
-# =====================================================
+    if len(temp) > 1:
+        offset_country = temp.iloc[-1]['Country']
 
-print('Generated DataFrames:')
+    # =====================================================
+    # FY COMMENTARY
+    # =====================================================
 
-for name in generated_df_names:
+    fy_var = fy_fcst - fy_target
 
-    print(name)
+    if round(fy_var, 2) == 0:
+
+        fy_comment = (
+            f"FYF {format_value(fy_fcst, label)} is on track."
+        )
+
+    else:
+
+        fy_pct = (
+            (fy_var / fy_target) * 100
+            if fy_target != 0 else 0
+        )
+
+        fy_status = (
+            'above'
+            if fy_var > 0
+            else 'below'
+        )
+
+        fy_comment = (
+            f"FYF {format_value(fy_fcst, label)} is "
+            f"{fy_status} target by "
+            f"{format_value(fy_var, label)} "
+            f"({fy_pct:.1f}% vs target)."
+        )
+
+    # =====================================================
+    # FINAL COMMENTARY
+    # =====================================================
+
+    commentary = (
+        f"{label}: "
+        f"YTD target {format_value(ytd_target, label)} is "
+        f"{ytd_status} target by "
+        f"{format_value(ytd_var, label)} "
+        f"({ytd_pct:.0f}%), "
+        f"driven by {top_country}, "
+        f"{offset_word} {offset_country}. "
+        f"{fy_comment}"
+    )
+
+    commentaries.append(commentary)
+
+# =========================================================
+# FINAL COMMENTARY DATAFRAME
+# =========================================================
+
+final_commentary_df = pd.DataFrame({
+    'Label': level1['Label'],
+    'Commentary': commentaries
+})
+
+print(final_commentary_df)
