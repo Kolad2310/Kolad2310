@@ -1,140 +1,128 @@
 ```
-# =====================================================
-# CREATE TAG COLUMN
-# =====================================================
-
-df4['Tag'] = np.nan
+import os
+from datetime import datetime
 
 # =====================================================
-# GENERATE DATAFRAMES
+# OUTPUT FOLDER
 # =====================================================
 
-generated_df_names = []
+timestamp = datetime.now().strftime('%d%b_%H%M')
 
-for business in ref_df['Business'].dropna().unique():
+output_folder = (
+    f'Business_Dataframes_{timestamp}'
+)
 
-    print(f'Processing : {business}')
+os.makedirs(
+    output_folder,
+    exist_ok=True
+)
 
-    temp_ref = ref_df[
-        ref_df['Business'] == business
-    ].reset_index(drop=True)
+# =====================================================
+# WRITE EACH DATAFRAME TO SEPARATE FILE
+# =====================================================
 
-    all_parts = []
+for df_name in generated_df_names:
 
-    current_df = None
+    current_df = globals()[df_name]
 
-    has_cg = temp_ref['Value'].astype(str).str.startswith(
-        'CG',
-        na=False
-    ).any()
-
-    # =================================================
-    # CASE 1 : CG EXISTS
-    # =================================================
-
-    if has_cg:
-
-        for _, row in temp_ref.iterrows():
-
-            filter_col = row['Filter Column']
-
-            filter_val = row['Value']
-
-            # --------------------------------------------
-            # START NEW DF WHEN CG COMES
-            # --------------------------------------------
-
-            if str(filter_val).startswith('CG'):
-
-                if current_df is not None:
-
-                    all_parts.append(current_df)
-
-                current_df = df4[
-                    df4[filter_col].astype(str)
-                    == str(filter_val)
-                ].copy()
-
-            # --------------------------------------------
-            # APPLY ADDITIONAL FILTERS
-            # --------------------------------------------
-
-            else:
-
-                if current_df is not None:
-
-                    current_df = current_df[
-                        current_df[filter_col].astype(str)
-                        == str(filter_val)
-                    ]
-
-        if current_df is not None:
-
-            all_parts.append(current_df)
-
-    # =================================================
-    # CASE 2 : NO CG EXISTS
-    # =================================================
-
-    else:
-
-        for _, row in temp_ref.iterrows():
-
-            filter_col = row['Filter Column']
-
-            filter_val = row['Value']
-
-            temp_df = df4[
-                df4[filter_col].astype(str)
-                == str(filter_val)
-            ].copy()
-
-            all_parts.append(temp_df)
-
-    # =================================================
-    # FINAL GENERATED DF
-    # =================================================
-
-    generated_df = pd.concat(
-        all_parts,
-        ignore_index=False
-    ).drop_duplicates()
-
-    # =================================================
-    # UPDATE TAG
-    # =================================================
-
-    df4.loc[
-        generated_df.index,
-        'Tag'
-    ] = str(business)
-
-    # =================================================
-    # DATAFRAME NAME
-    # =================================================
-
-    df_name = (
-        str(business)
-        .replace('/', '_')
-        .replace('\\', '_')
-        .replace(' ', '_')
-        .replace('-', '_')
+    output_file = os.path.join(
+        output_folder,
+        f'{df_name}.xlsx'
     )
 
-    # =================================================
-    # CREATE DATAFRAME VARIABLE
-    # =================================================
+    with pd.ExcelWriter(
+        output_file,
+        engine='xlsxwriter'
+    ) as writer:
 
-    globals()[df_name] = generated_df
+        current_df.to_excel(
+            writer,
+            sheet_name='Data',
+            index=False
+        )
 
-    generated_df_names.append(df_name)
+        workbook = writer.book
 
-# =====================================================
-# PRINT GENERATED DATAFRAME NAMES
-# =====================================================
+        worksheet = writer.sheets['Data']
 
-print('Generated DataFrames:')
+        # =============================================
+        # HEADER FORMAT
+        # =============================================
 
-for name in generated_df_names:
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#BFBFBF',
+            'border': 1
+        })
 
-    print(name)
+        number_format = workbook.add_format({
+            'num_format': '#,##0'
+        })
+
+        # =============================================
+        # FORMAT HEADERS
+        # =============================================
+
+        for col_num, value in enumerate(
+            current_df.columns.values
+        ):
+
+            worksheet.write(
+                0,
+                col_num,
+                value,
+                header_format
+            )
+
+        # =============================================
+        # AUTO WIDTH
+        # =============================================
+
+        for idx, col in enumerate(
+            current_df.columns
+        ):
+
+            try:
+
+                max_len = max(
+                    current_df[col]
+                    .astype(str)
+                    .map(len)
+                    .max(),
+                    len(col)
+                ) + 3
+
+            except:
+
+                max_len = len(col) + 3
+
+            worksheet.set_column(
+                idx,
+                idx,
+                min(max_len, 60)
+            )
+
+        # =============================================
+        # NUMBER FORMAT
+        # =============================================
+
+        numeric_cols = current_df.select_dtypes(
+            include='number'
+        ).columns
+
+        for col in numeric_cols:
+
+            col_idx = current_df.columns.get_loc(
+                col
+            )
+
+            worksheet.set_column(
+                col_idx,
+                col_idx,
+                None,
+                number_format
+            )
+
+    print(f'Created : {output_file}')
+
+print('All dataframe files generated successfully.')
