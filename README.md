@@ -35,7 +35,7 @@ generated_df_names = []
 
 for business in ref_df['Business'].dropna().unique():
 
-    print(f'Processing : {business}')
+    print(f'\nProcessing : {business}')
 
     # =================================================
     # FILTER REFERENCE FOR BUSINESS
@@ -46,73 +46,112 @@ for business in ref_df['Business'].dropna().unique():
     ].reset_index(drop=True)
 
     # =================================================
-    # FIND CG START ROWS
+    # CHECK IF CG EXISTS
     # =================================================
 
-    cg_positions = temp_ref[
-        temp_ref['Value']
-        .astype(str)
-        .str.startswith('CG', na=False)
-    ].index.tolist()
+    has_cg = temp_ref['Value'].astype(str).str.startswith(
+        'CG',
+        na=False
+    ).any()
 
     all_parts = []
 
     # =================================================
-    # LOOP EACH CG BLOCK
+    # CASE 1 : CG EXISTS
     # =================================================
 
-    for i, start_idx in enumerate(cg_positions):
+    if has_cg:
 
-        # ---------------------------------------------
-        # END POSITION
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # FIND CG START POSITIONS
+        # -------------------------------------------------
 
-        if i < len(cg_positions) - 1:
-
-            end_idx = cg_positions[i + 1]
-
-        else:
-
-            end_idx = len(temp_ref)
-
-        # ---------------------------------------------
-        # CURRENT CG BLOCK
-        # ---------------------------------------------
-
-        block_df = temp_ref.iloc[
-            start_idx:end_idx
-        ].reset_index(drop=True)
-
-        # ---------------------------------------------
-        # FIRST FILTER = CG
-        # ---------------------------------------------
-
-        first_row = block_df.iloc[0]
-
-        filter_col = first_row['Filter Column']
-
-        filter_val = str(first_row['Value'])
-
-        current_df = df4[
-            df4[filter_col]
+        cg_positions = temp_ref[
+            temp_ref['Value']
             .astype(str)
-            == filter_val
-        ].copy()
+            .str.startswith('CG', na=False)
+        ].index.tolist()
 
-        # ---------------------------------------------
-        # APPLY RTN / PR FILTERS
-        # ---------------------------------------------
+        # -------------------------------------------------
+        # LOOP EACH CG BLOCK
+        # -------------------------------------------------
 
-        for j in range(1, len(block_df)):
+        for i, start_idx in enumerate(cg_positions):
 
-            row = block_df.iloc[j]
+            # ---------------------------------------------
+            # END POSITION
+            # ---------------------------------------------
+
+            if i < len(cg_positions) - 1:
+
+                end_idx = cg_positions[i + 1]
+
+            else:
+
+                end_idx = len(temp_ref)
+
+            # ---------------------------------------------
+            # CURRENT BLOCK
+            # ---------------------------------------------
+
+            block_df = temp_ref.iloc[
+                start_idx:end_idx
+            ].reset_index(drop=True)
+
+            # ---------------------------------------------
+            # FIRST FILTER = CG
+            # ---------------------------------------------
+
+            first_row = block_df.iloc[0]
+
+            filter_col = first_row['Filter Column']
+
+            filter_val = str(first_row['Value'])
+
+            cg_filtered_df = df4[
+                df4[filter_col]
+                .astype(str)
+                == filter_val
+            ].copy()
+
+            # ---------------------------------------------
+            # APPLY ALL SUB FILTERS
+            # ---------------------------------------------
+
+            for j in range(1, len(block_df)):
+
+                row = block_df.iloc[j]
+
+                sub_filter_col = row['Filter Column']
+
+                sub_filter_val = str(row['Value'])
+
+                temp_filtered = cg_filtered_df[
+                    cg_filtered_df[sub_filter_col]
+                    .astype(str)
+                    == sub_filter_val
+                ].copy()
+
+                all_parts.append(temp_filtered)
+
+    # =================================================
+    # CASE 2 : NO CG EXISTS
+    # =================================================
+
+    else:
+
+        # -------------------------------------------------
+        # DIRECTLY FILTER AND APPEND
+        # -------------------------------------------------
+
+        for _, row in temp_ref.iterrows():
 
             filter_col = row['Filter Column']
 
             filter_val = str(row['Value'])
 
-            temp_filtered = current_df[
-                current_df[filter_col]
+            temp_filtered = df4[
+                df4[filter_col]
                 .astype(str)
                 == filter_val
             ].copy()
