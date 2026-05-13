@@ -3,7 +3,7 @@
 # CREATE TAG COLUMN
 # =====================================================
 
-df4['Tag'] = ''
+df4['Tag'] = np.nan
 
 # =====================================================
 # GENERATE DATAFRAMES
@@ -18,6 +18,8 @@ for business in ref_df['Business'].dropna().unique():
     temp_ref = ref_df[
         ref_df['Business'] == business
     ].reset_index(drop=True)
+
+    all_parts = []
 
     current_df = None
 
@@ -39,10 +41,14 @@ for business in ref_df['Business'].dropna().unique():
             filter_val = row['Value']
 
             # --------------------------------------------
-            # FIRST FILTER
+            # START NEW DF WHEN CG COMES
             # --------------------------------------------
 
-            if current_df is None:
+            if str(filter_val).startswith('CG'):
+
+                if current_df is not None:
+
+                    all_parts.append(current_df)
 
                 current_df = df4[
                     df4[filter_col].astype(str)
@@ -50,23 +56,27 @@ for business in ref_df['Business'].dropna().unique():
                 ].copy()
 
             # --------------------------------------------
-            # SUBSEQUENT FILTERS
+            # APPLY ADDITIONAL FILTERS
             # --------------------------------------------
 
             else:
 
-                current_df = current_df[
-                    current_df[filter_col].astype(str)
-                    == str(filter_val)
-                ]
+                if current_df is not None:
+
+                    current_df = current_df[
+                        current_df[filter_col].astype(str)
+                        == str(filter_val)
+                    ]
+
+        if current_df is not None:
+
+            all_parts.append(current_df)
 
     # =================================================
     # CASE 2 : NO CG EXISTS
     # =================================================
 
     else:
-
-        temp_parts = []
 
         for _, row in temp_ref.iterrows():
 
@@ -79,21 +89,19 @@ for business in ref_df['Business'].dropna().unique():
                 == str(filter_val)
             ].copy()
 
-            temp_parts.append(temp_df)
-
-        current_df = pd.concat(
-            temp_parts,
-            ignore_index=False
-        ).drop_duplicates()
+            all_parts.append(temp_df)
 
     # =================================================
     # FINAL GENERATED DF
     # =================================================
 
-    generated_df = current_df.copy()
+    generated_df = pd.concat(
+        all_parts,
+        ignore_index=False
+    ).drop_duplicates()
 
     # =================================================
-    # UPDATE TAG ONLY FOR FINAL ROWS
+    # UPDATE TAG
     # =================================================
 
     df4.loc[
