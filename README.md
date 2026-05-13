@@ -1,4 +1,9 @@
 ```
+import pandas as pd
+import numpy as np
+import os
+from datetime import datetime
+
 # =====================================================
 # CREATE TAG COLUMN
 # =====================================================
@@ -6,117 +11,139 @@
 df4['Tag'] = np.nan
 
 # =====================================================
-# GENERATE DATAFRAMES
+# OUTPUT FOLDER
+# =====================================================
+
+timestamp = datetime.now().strftime('%d%b_%H%M')
+
+output_folder = f'Business_Output_{timestamp}'
+
+os.makedirs(
+    output_folder,
+    exist_ok=True
+)
+
+# =====================================================
+# STORE GENERATED DATAFRAME NAMES
 # =====================================================
 
 generated_df_names = []
+
+# =====================================================
+# LOOP BUSINESS
+# =====================================================
 
 for business in ref_df['Business'].dropna().unique():
 
     print(f'Processing : {business}')
 
+    # =================================================
+    # FILTER REFERENCE FOR BUSINESS
+    # =================================================
+
     temp_ref = ref_df[
         ref_df['Business'] == business
     ].reset_index(drop=True)
 
+    # =================================================
+    # FIND CG START ROWS
+    # =================================================
+
+    cg_positions = temp_ref[
+        temp_ref['Value']
+        .astype(str)
+        .str.startswith('CG', na=False)
+    ].index.tolist()
+
     all_parts = []
 
-    current_df = None
-
     # =================================================
-    # LOOP FILTERS IN ORDER
+    # LOOP EACH CG BLOCK
     # =================================================
 
-    for _, row in temp_ref.iterrows():
+    for i, start_idx in enumerate(cg_positions):
 
-        filter_col = row['Filter Column']
+        # ---------------------------------------------
+        # END POSITION
+        # ---------------------------------------------
 
-        filter_val = str(row['Value'])
+        if i < len(cg_positions) - 1:
 
-        # =============================================
-        # START NEW HIERARCHY
-        # =============================================
+            end_idx = cg_positions[i + 1]
 
-        # CG or RTN starts new drilldown
+        else:
 
-        if (
-            filter_val.startswith('CG')
-            or filter_val.startswith('RTN')
-        ):
+            end_idx = len(temp_ref)
 
-            # -----------------------------------------
-            # APPEND PREVIOUS HIERARCHY DF
-            # -----------------------------------------
+        # ---------------------------------------------
+        # CURRENT CG BLOCK
+        # ---------------------------------------------
 
-            if current_df is not None:
+        block_df = temp_ref.iloc[
+            start_idx:end_idx
+        ].reset_index(drop=True)
 
-                all_parts.append(current_df)
+        # ---------------------------------------------
+        # FIRST FILTER = CG
+        # ---------------------------------------------
 
-            # -----------------------------------------
-            # START NEW DF
-            # -----------------------------------------
+        first_row = block_df.iloc[0]
 
-            current_df = df4[
-                df4[filter_col]
+        filter_col = first_row['Filter Column']
+
+        filter_val = str(first_row['Value'])
+
+        current_df = df4[
+            df4[filter_col]
+            .astype(str)
+            == filter_val
+        ].copy()
+
+        # ---------------------------------------------
+        # APPLY RTN / PR FILTERS
+        # ---------------------------------------------
+
+        for j in range(1, len(block_df)):
+
+            row = block_df.iloc[j]
+
+            filter_col = row['Filter Column']
+
+            filter_val = str(row['Value'])
+
+            temp_filtered = current_df[
+                current_df[filter_col]
                 .astype(str)
                 == filter_val
             ].copy()
 
-        # =============================================
-        # DRILLDOWN FILTERS
-        # =============================================
-
-        else:
-
-            # -----------------------------------------
-            # IF NO ROOT EXISTS YET
-            # -----------------------------------------
-
-            if current_df is None:
-
-                current_df = df4[
-                    df4[filter_col]
-                    .astype(str)
-                    == filter_val
-                ].copy()
-
-            # -----------------------------------------
-            # APPLY DRILLDOWN
-            # -----------------------------------------
-
-            else:
-
-                current_df = current_df[
-                    current_df[filter_col]
-                    .astype(str)
-                    == filter_val
-                ]
-
-    # =================================================
-    # APPEND FINAL DF
-    # =================================================
-
-    if current_df is not None:
-
-        all_parts.append(current_df)
+            all_parts.append(temp_filtered)
 
     # =================================================
     # FINAL GENERATED DF
     # =================================================
 
-    generated_df = pd.concat(
-        all_parts,
-        ignore_index=False
-    ).drop_duplicates()
+    if len(all_parts) > 0:
+
+        generated_df = pd.concat(
+            all_parts,
+            ignore_index=False
+        ).drop_duplicates()
+
+    else:
+
+        generated_df = pd.DataFrame()
 
     # =================================================
-    # UPDATE TAG
+    # UPDATE TAG COLUMN
     # =================================================
 
-    df4.loc[
-        generated_df.index,
-        'Tag'
-    ] = str(business)
+    if len(generated_df) > 0:
+
+        df4.loc[
+            generated_df.index,
+            'Tag'
+        ] = str(business)
 
     # =================================================
     # DATAFRAME NAME
@@ -138,11 +165,115 @@ for business in ref_df['Business'].dropna().unique():
 
     generated_df_names.append(df_name)
 
+    # =================================================
+    # WRITE TO EXCEL
+    # =================================================
+
+    output_file = os.path.join(
+        output_folder,
+        f'{df_name}_{timestamp}.xlsx'
+    )
+
+    with pd.ExcelWriter(
+        output_file,
+        engine='xlsxwriter'
+    ) as writer:
+
+        generated_df.to_excel(
+            writer,
+            sheet_name='Data',
+            index=False
+        )
+
+        workbook = writer.book
+
+        worksheet = writer.sheets['Data']
+
+        # =============================================
+        # HEADER FORMAT
+        # =============================================
+
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#BFBFBF',
+            'border': 1
+        })
+
+        number_format = workbook.add_format({
+            'num_format': '#,##0'
+        })
+
+        # =============================================
+        # FORMAT HEADERS
+        # =============================================
+
+        for col_num, value in enumerate(
+            generated_df.columns.values
+        ):
+
+            worksheet.write(
+                0,
+                col_num,
+                value,
+                header_format
+            )
+
+        # =============================================
+        # AUTO WIDTH
+        # =============================================
+
+        for idx, col in enumerate(
+            generated_df.columns
+        ):
+
+            try:
+
+                max_len = max(
+                    generated_df[col]
+                    .astype(str)
+                    .map(len)
+                    .max(),
+                    len(col)
+                ) + 3
+
+            except:
+
+                max_len = len(col) + 3
+
+            worksheet.set_column(
+                idx,
+                idx,
+                min(max_len, 60)
+            )
+
+        # =============================================
+        # NUMBER FORMAT
+        # =============================================
+
+        numeric_cols = generated_df.select_dtypes(
+            include='number'
+        ).columns
+
+        for col in numeric_cols:
+
+            col_idx = generated_df.columns.get_loc(
+                col
+            )
+
+            worksheet.set_column(
+                col_idx,
+                col_idx,
+                None,
+                number_format
+            )
+
+    print(f'Created : {output_file}')
+
 # =====================================================
 # PRINT GENERATED DATAFRAME NAMES
 # =====================================================
 
-print('Generated DataFrames:')
+print('\nGenerated DataFrames:\n')
 
 for name in generated_df_names:
 
