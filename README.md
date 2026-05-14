@@ -37,10 +37,6 @@ for business in ref_df['Business'].dropna().unique():
 
     print(f'\nProcessing : {business}')
 
-    # =================================================
-    # FILTER REFERENCE FOR BUSINESS
-    # =================================================
-
     temp_ref = ref_df[
         ref_df['Business'] == business
     ].reset_index(drop=True)
@@ -62,25 +58,21 @@ for business in ref_df['Business'].dropna().unique():
 
     if has_cg:
 
-        # -------------------------------------------------
-        # FIND CG START POSITIONS
-        # -------------------------------------------------
-
         cg_positions = temp_ref[
             temp_ref['Value']
             .astype(str)
             .str.startswith('CG', na=False)
         ].index.tolist()
 
-        # -------------------------------------------------
-        # LOOP EACH CG BLOCK
-        # -------------------------------------------------
+        # ------------------------------------------------
+        # LOOP CG BLOCKS
+        # ------------------------------------------------
 
         for i, start_idx in enumerate(cg_positions):
 
-            # ---------------------------------------------
-            # END POSITION
-            # ---------------------------------------------
+            # =============================================
+            # BLOCK END
+            # =============================================
 
             if i < len(cg_positions) - 1:
 
@@ -90,17 +82,17 @@ for business in ref_df['Business'].dropna().unique():
 
                 end_idx = len(temp_ref)
 
-            # ---------------------------------------------
+            # =============================================
             # CURRENT BLOCK
-            # ---------------------------------------------
+            # =============================================
 
             block_df = temp_ref.iloc[
                 start_idx:end_idx
             ].reset_index(drop=True)
 
-            # ---------------------------------------------
+            # =============================================
             # FIRST FILTER = CG
-            # ---------------------------------------------
+            # =============================================
 
             first_row = block_df.iloc[0]
 
@@ -114,35 +106,41 @@ for business in ref_df['Business'].dropna().unique():
                 == filter_val
             ].copy()
 
-            # ---------------------------------------------
-            # APPLY ALL SUB FILTERS
-            # ---------------------------------------------
+            # =============================================
+            # ONLY CG EXISTS
+            # =============================================
 
-            for j in range(1, len(block_df)):
+            if len(block_df) == 1:
 
-                row = block_df.iloc[j]
+                all_parts.append(cg_filtered_df)
 
-                sub_filter_col = row['Filter Column']
+            # =============================================
+            # APPLY RTN / PR FILTERS
+            # =============================================
 
-                sub_filter_val = str(row['Value'])
+            else:
 
-                temp_filtered = cg_filtered_df[
-                    cg_filtered_df[sub_filter_col]
-                    .astype(str)
-                    == sub_filter_val
-                ].copy()
+                for j in range(1, len(block_df)):
 
-                all_parts.append(temp_filtered)
+                    row = block_df.iloc[j]
+
+                    sub_filter_col = row['Filter Column']
+
+                    sub_filter_val = str(row['Value'])
+
+                    temp_filtered = cg_filtered_df[
+                        cg_filtered_df[sub_filter_col]
+                        .astype(str)
+                        == sub_filter_val
+                    ].copy()
+
+                    all_parts.append(temp_filtered)
 
     # =================================================
     # CASE 2 : NO CG EXISTS
     # =================================================
 
     else:
-
-        # -------------------------------------------------
-        # DIRECTLY FILTER AND APPEND
-        # -------------------------------------------------
 
         for _, row in temp_ref.iterrows():
 
@@ -174,7 +172,7 @@ for business in ref_df['Business'].dropna().unique():
         generated_df = pd.DataFrame()
 
     # =================================================
-    # UPDATE TAG COLUMN
+    # UPDATE TAG
     # =================================================
 
     if len(generated_df) > 0:
@@ -197,7 +195,7 @@ for business in ref_df['Business'].dropna().unique():
     )
 
     # =================================================
-    # CREATE DATAFRAME VARIABLE
+    # CREATE VARIABLE
     # =================================================
 
     globals()[df_name] = generated_df
@@ -229,7 +227,7 @@ for business in ref_df['Business'].dropna().unique():
         worksheet = writer.sheets['Data']
 
         # =============================================
-        # HEADER FORMAT
+        # FORMATS
         # =============================================
 
         header_format = workbook.add_format({
@@ -243,7 +241,7 @@ for business in ref_df['Business'].dropna().unique():
         })
 
         # =============================================
-        # FORMAT HEADERS
+        # HEADERS
         # =============================================
 
         for col_num, value in enumerate(
@@ -309,7 +307,7 @@ for business in ref_df['Business'].dropna().unique():
     print(f'Created : {output_file}')
 
 # =====================================================
-# PRINT GENERATED DATAFRAME NAMES
+# PRINT DATAFRAME NAMES
 # =====================================================
 
 print('\nGenerated DataFrames:\n')
