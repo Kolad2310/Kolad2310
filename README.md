@@ -32,7 +32,7 @@ generated_df_names = []
 
 # =====================================================
 # STEP 1 :
-# GENERATE NORMAL PRODUCT DATAFRAMES
+# GENERATE PRODUCT DATAFRAMES
 # =====================================================
 
 for business in ref_df['Business'].dropna().unique():
@@ -234,35 +234,55 @@ npr_df = df4[
 ].copy()
 
 # =====================================================
-# UPDATE NPR MASTER TAG
-# =====================================================
-
-df4.loc[
-    npr_df.index,
-    'tag_npr'
-] = 'NPR_POOL'
-
-# =====================================================
 # STEP 3 :
-# APPEND NPR CUTS TO PRODUCT DFs
+# APPEND NPR CUTS
+# USING RTNs FROM REF_DF
 # =====================================================
 
-for df_name in generated_df_names:
+for business in ref_df['Business'].dropna().unique():
+
+    df_name = (
+        str(business)
+        .replace('/', '_')
+        .replace('\\', '_')
+        .replace(' ', '_')
+        .replace('-', '_')
+    )
 
     print(f'Appending NPR cut to : {df_name}')
 
     current_df = globals()[df_name]
 
     # -------------------------------------------------
-    # GET RTNs PRESENT IN PRODUCT DF
+    # CURRENT BUSINESS REF
     # -------------------------------------------------
 
-    rtn_list = current_df[
-        'MI RTN'
-    ].astype(str).dropna().unique().tolist()
+    temp_ref = ref_df[
+        ref_df['Business'] == business
+    ].reset_index(drop=True)
 
     # -------------------------------------------------
-    # FILTER NPR DF FOR SAME RTNs
+    # PICK RTNs FROM REF_DF
+    # -------------------------------------------------
+
+    rtn_list = temp_ref[
+        temp_ref['Value']
+        .astype(str)
+        .str.startswith('RTN', na=False)
+    ]['Value'].astype(str).unique().tolist()
+
+    # -------------------------------------------------
+    # IF NO RTN EXISTS SKIP
+    # -------------------------------------------------
+
+    if len(rtn_list) == 0:
+
+        print(f'No RTNs for {df_name}')
+
+        continue
+
+    # -------------------------------------------------
+    # FILTER NPR CUT
     # -------------------------------------------------
 
     npr_cut = npr_df[
