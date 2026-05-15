@@ -130,6 +130,10 @@ for business in ref_df['Business'].dropna().unique():
 
                     sub_filter_val = str(row['Value'])
 
+                    # -------------------------------------
+                    # FILTER FROM CG BASE
+                    # -------------------------------------
+
                     temp_filtered = cg_filtered_df[
                         cg_filtered_df[sub_filter_col]
                         .astype(str)
@@ -195,10 +199,6 @@ for business in ref_df['Business'].dropna().unique():
         .replace(' ', '_')
         .replace('-', '_')
     )
-
-    # =================================================
-    # CREATE VARIABLE
-    # =================================================
 
     globals()[df_name] = generated_df
 
@@ -338,6 +338,10 @@ for business in ref_df['Business'].dropna().unique():
                     sub_filter_col = row['Filter Column']
 
                     sub_filter_val = str(row['Value'])
+
+                    # ---------------------------------
+                    # FILTER FROM CG BASE
+                    # ---------------------------------
 
                     temp_npr = current_npr[
                         current_npr[sub_filter_col]
