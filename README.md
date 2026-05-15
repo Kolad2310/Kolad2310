@@ -31,7 +31,8 @@ os.makedirs(
 generated_df_names = []
 
 # =====================================================
-# LOOP BUSINESS
+# STEP 1 :
+# GENERATE NORMAL PRODUCT DATAFRAMES
 # =====================================================
 
 for business in ref_df['Business'].dropna().unique():
@@ -177,80 +178,6 @@ for business in ref_df['Business'].dropna().unique():
         generated_df = pd.DataFrame()
 
     # =================================================
-    # NPR ADDITION
-    # =================================================
-
-    has_cg01 = temp_ref[
-        'Value'
-    ].astype(str).str.contains(
-        'CG01',
-        na=False
-    ).any()
-
-    if has_cg01:
-
-        # -----------------------------------------------
-        # GET RTNs UNDER CURRENT BUSINESS
-        # -----------------------------------------------
-
-        npr_rtns = temp_ref[
-            temp_ref['Value']
-            .astype(str)
-            .str.startswith('RTN', na=False)
-        ]['Value'].astype(str).unique().tolist()
-
-        # -----------------------------------------------
-        # FILTER NPR DATA
-        # -----------------------------------------------
-
-        npr_df = df4[
-            (
-                df4['MI Product Leaf Describe']
-                .astype(str)
-                .str.contains('NPT', na=False)
-            )
-            &
-            (
-                df4['MI GLOBALBUSINESS Level 3']
-                .astype(str)
-                == 'CG01'
-            )
-            &
-            (
-                df4['Level6_mica_desc']
-                .astype(str)
-                == 'Total opex'
-            )
-            &
-            (
-                df4['MI RTN']
-                .astype(str)
-                .isin(npr_rtns)
-            )
-        ].copy()
-
-        # -----------------------------------------------
-        # APPEND NPR DATA
-        # -----------------------------------------------
-
-        generated_df = pd.concat(
-            [
-                generated_df,
-                npr_df
-            ],
-            ignore_index=False
-        ).drop_duplicates()
-
-        # -----------------------------------------------
-        # UPDATE NPR TAG
-        # -----------------------------------------------
-
-        df4.loc[
-            npr_df.index,
-            'tag_npr'
-        ] = str(business) + '_NPR'
-
-    # =================================================
     # UPDATE TAG
     # =================================================
 
@@ -281,9 +208,113 @@ for business in ref_df['Business'].dropna().unique():
 
     generated_df_names.append(df_name)
 
-    # =================================================
-    # WRITE TO EXCEL
-    # =================================================
+# =====================================================
+# STEP 2 :
+# CREATE MASTER NPR DF
+# =====================================================
+
+npr_df = df4[
+    (
+        df4['MI Product Leaf Describe']
+        .astype(str)
+        .str.contains('NPT', na=False)
+    )
+    &
+    (
+        df4['MI GLOBALBUSINESS Level 3']
+        .astype(str)
+        == 'CG01'
+    )
+    &
+    (
+        df4['Level6_mica_desc']
+        .astype(str)
+        == 'Total opex'
+    )
+].copy()
+
+# =====================================================
+# UPDATE NPR MASTER TAG
+# =====================================================
+
+df4.loc[
+    npr_df.index,
+    'tag_npr'
+] = 'NPR_POOL'
+
+# =====================================================
+# STEP 3 :
+# APPEND NPR CUTS TO PRODUCT DFs
+# =====================================================
+
+for df_name in generated_df_names:
+
+    print(f'Appending NPR cut to : {df_name}')
+
+    current_df = globals()[df_name]
+
+    # -------------------------------------------------
+    # GET RTNs PRESENT IN PRODUCT DF
+    # -------------------------------------------------
+
+    rtn_list = current_df[
+        'MI RTN'
+    ].astype(str).dropna().unique().tolist()
+
+    # -------------------------------------------------
+    # FILTER NPR DF FOR SAME RTNs
+    # -------------------------------------------------
+
+    npr_cut = npr_df[
+        npr_df['MI RTN']
+        .astype(str)
+        .isin(rtn_list)
+    ].copy()
+
+    # -------------------------------------------------
+    # UPDATE TAG_NPR
+    # -------------------------------------------------
+
+    if len(npr_cut) > 0:
+
+        df4.loc[
+            npr_cut.index,
+            'tag_npr'
+        ] = str(df_name)
+
+    # -------------------------------------------------
+    # APPEND NPR CUT
+    # -------------------------------------------------
+
+    updated_df = pd.concat(
+        [
+            current_df,
+            npr_cut
+        ],
+        ignore_index=False
+    ).drop_duplicates()
+
+    # -------------------------------------------------
+    # REPLACE EXISTING DF
+    # -------------------------------------------------
+
+    globals()[df_name] = updated_df
+
+    print(
+        f'{df_name} : '
+        f'Original={len(current_df)}, '
+        f'NPR Added={len(npr_cut)}, '
+        f'Final={len(updated_df)}'
+    )
+
+# =====================================================
+# STEP 4 :
+# WRITE DATAFRAMES TO EXCEL
+# =====================================================
+
+for df_name in generated_df_names:
+
+    current_df = globals()[df_name]
 
     output_file = os.path.join(
         output_folder,
@@ -295,7 +326,7 @@ for business in ref_df['Business'].dropna().unique():
         engine='xlsxwriter'
     ) as writer:
 
-        generated_df.to_excel(
+        current_df.to_excel(
             writer,
             sheet_name='Data',
             index=False
@@ -343,7 +374,7 @@ for business in ref_df['Business'].dropna().unique():
         # =============================================
 
         for col_num, value in enumerate(
-            generated_df.columns.values
+            current_df.columns.values
         ):
 
             if value in blue_headers:
@@ -369,13 +400,13 @@ for business in ref_df['Business'].dropna().unique():
         # =============================================
 
         for idx, col in enumerate(
-            generated_df.columns
+            current_df.columns
         ):
 
             try:
 
                 max_len = max(
-                    generated_df[col]
+                    current_df[col]
                     .astype(str)
                     .map(len)
                     .max(),
@@ -396,13 +427,13 @@ for business in ref_df['Business'].dropna().unique():
         # NUMBER FORMAT
         # =============================================
 
-        numeric_cols = generated_df.select_dtypes(
+        numeric_cols = current_df.select_dtypes(
             include='number'
         ).columns
 
         for col in numeric_cols:
 
-            col_idx = generated_df.columns.get_loc(
+            col_idx = current_df.columns.get_loc(
                 col
             )
 
