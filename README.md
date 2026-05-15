@@ -1,66 +1,39 @@
 ```
-# =============================================
-# HEADER FORMATS
-# =============================================
+# =====================================================
+# NPR PRODUCT DATAFRAME
+# =====================================================
 
-grey_header = workbook.add_format({
-    'bold': True,
-    'bg_color': '#BFBFBF',
-    'border': 1
-})
+npr_prod_df = df4[
+    (
+        df4['MI Product Leaf Describe']
+        .astype(str)
+        .str.contains('NPT', na=False)
+    )
+    &
+    (
+        df4['MI GLOBALBUSINESS Level 3']
+        .astype(str)
+        == 'CG01'
+    )
+    &
+    (
+        df4['Level6_mica_desc']
+        .astype(str)
+        == 'Total opex'
+    )
+].copy()
 
-blue_header = workbook.add_format({
-    'bold': True,
-    'bg_color': '#D9EAF7',
-    'border': 1
-})
+# =====================================================
+# UPDATE TAG
+# =====================================================
 
-number_format = workbook.add_format({
-    'num_format': '#,##0'
-})
+df4.loc[
+    npr_prod_df.index,
+    'Tag'
+] = 'npr_prod'
 
-# =============================================
-# HEADERS TO COLOUR BLUE
-# =============================================
+# =====================================================
+# CHECK RESULT
+# =====================================================
 
-blue_headers = [
-    'Tag',
-    'Scope',
-    'P&L',
-    'BS',
-    'AVB'
-]
-
-# =============================================
-# FORMAT HEADERS
-# =============================================
-
-for col_num, value in enumerate(
-    generated_df.columns.values
-):
-
-    # -----------------------------------------
-    # BLUE HEADERS
-    # -----------------------------------------
-
-    if value in blue_headers:
-
-        worksheet.write(
-            0,
-            col_num,
-            value,
-            blue_header
-        )
-
-    # -----------------------------------------
-    # DEFAULT GREY
-    # -----------------------------------------
-
-    else:
-
-        worksheet.write(
-            0,
-            col_num,
-            value,
-            grey_header
-        )
+print(npr_prod_df.shape)
