@@ -47,10 +47,6 @@ for business in ref_df['Business'].dropna().unique():
         ref_df['Business'] == business
     ].reset_index(drop=True)
 
-    # =================================================
-    # CHECK IF CG EXISTS
-    # =================================================
-
     has_cg = temp_ref['Value'].astype(str).str.startswith(
         'CG',
         na=False
@@ -235,8 +231,7 @@ npr_df = df4[
 
 # =====================================================
 # STEP 3 :
-# APPEND NPR CUTS
-# USING RTNs FROM REF_DF
+# SLICE NPR_DF SAME WAY AS DF4
 # =====================================================
 
 for business in ref_df['Business'].dropna().unique():
@@ -249,82 +244,176 @@ for business in ref_df['Business'].dropna().unique():
         .replace('-', '_')
     )
 
-    print(f'Appending NPR cut to : {df_name}')
+    print(f'NPR slicing for : {df_name}')
 
     current_df = globals()[df_name]
 
     # -------------------------------------------------
-    # CURRENT BUSINESS REF
+    # FILTER REFERENCE
     # -------------------------------------------------
 
     temp_ref = ref_df[
         ref_df['Business'] == business
     ].reset_index(drop=True)
 
-    # -------------------------------------------------
-    # PICK RTNs FROM REF_DF
-    # -------------------------------------------------
+    has_cg = temp_ref['Value'].astype(str).str.startswith(
+        'CG',
+        na=False
+    ).any()
 
-    rtn_list = temp_ref[
-        temp_ref['Value']
-        .astype(str)
-        .str.startswith('RTN', na=False)
-    ]['Value'].astype(str).unique().tolist()
+    npr_parts = []
 
-    # -------------------------------------------------
-    # IF NO RTN EXISTS SKIP
-    # -------------------------------------------------
+    # =================================================
+    # CASE 1 : CG EXISTS
+    # =================================================
 
-    if len(rtn_list) == 0:
+    if has_cg:
 
-        print(f'No RTNs for {df_name}')
+        cg_positions = temp_ref[
+            temp_ref['Value']
+            .astype(str)
+            .str.startswith('CG', na=False)
+        ].index.tolist()
 
-        continue
+        # ---------------------------------------------
+        # LOOP CG BLOCKS
+        # ---------------------------------------------
 
-    # -------------------------------------------------
-    # FILTER NPR CUT
-    # -------------------------------------------------
+        for i, start_idx in enumerate(cg_positions):
 
-    npr_cut = npr_df[
-        npr_df['MI RTN']
-        .astype(str)
-        .isin(rtn_list)
-    ].copy()
+            # -----------------------------------------
+            # BLOCK END
+            # -----------------------------------------
 
-    # -------------------------------------------------
+            if i < len(cg_positions) - 1:
+
+                end_idx = cg_positions[i + 1]
+
+            else:
+
+                end_idx = len(temp_ref)
+
+            # -----------------------------------------
+            # CURRENT BLOCK
+            # -----------------------------------------
+
+            block_df = temp_ref.iloc[
+                start_idx:end_idx
+            ].reset_index(drop=True)
+
+            # -----------------------------------------
+            # FIRST FILTER = CG
+            # -----------------------------------------
+
+            first_row = block_df.iloc[0]
+
+            filter_col = first_row['Filter Column']
+
+            filter_val = str(first_row['Value'])
+
+            current_npr = npr_df[
+                npr_df[filter_col]
+                .astype(str)
+                == filter_val
+            ].copy()
+
+            # -----------------------------------------
+            # ONLY CG EXISTS
+            # -----------------------------------------
+
+            if len(block_df) == 1:
+
+                npr_parts.append(current_npr)
+
+            # -----------------------------------------
+            # APPLY RTN / PR FILTERS
+            # -----------------------------------------
+
+            else:
+
+                for j in range(1, len(block_df)):
+
+                    row = block_df.iloc[j]
+
+                    sub_filter_col = row['Filter Column']
+
+                    sub_filter_val = str(row['Value'])
+
+                    temp_npr = current_npr[
+                        current_npr[sub_filter_col]
+                        .astype(str)
+                        == sub_filter_val
+                    ].copy()
+
+                    npr_parts.append(temp_npr)
+
+    # =================================================
+    # CASE 2 : NO CG EXISTS
+    # =================================================
+
+    else:
+
+        for _, row in temp_ref.iterrows():
+
+            filter_col = row['Filter Column']
+
+            filter_val = str(row['Value'])
+
+            temp_npr = npr_df[
+                npr_df[filter_col]
+                .astype(str)
+                == filter_val
+            ].copy()
+
+            npr_parts.append(temp_npr)
+
+    # =================================================
+    # FINAL NPR CUT
+    # =================================================
+
+    if len(npr_parts) > 0:
+
+        final_npr_cut = pd.concat(
+            npr_parts,
+            ignore_index=False
+        ).drop_duplicates()
+
+    else:
+
+        final_npr_cut = pd.DataFrame()
+
+    # =================================================
     # UPDATE TAG_NPR
-    # -------------------------------------------------
+    # =================================================
 
-    if len(npr_cut) > 0:
+    if len(final_npr_cut) > 0:
 
         df4.loc[
-            npr_cut.index,
+            final_npr_cut.index,
             'tag_npr'
         ] = str(df_name)
 
-    # -------------------------------------------------
+    # =================================================
     # APPEND NPR CUT
-    # -------------------------------------------------
+    # =================================================
 
     updated_df = pd.concat(
         [
             current_df,
-            npr_cut
+            final_npr_cut
         ],
         ignore_index=False
     ).drop_duplicates()
 
-    # -------------------------------------------------
+    # =================================================
     # REPLACE EXISTING DF
-    # -------------------------------------------------
+    # =================================================
 
     globals()[df_name] = updated_df
 
     print(
         f'{df_name} : '
-        f'Original={len(current_df)}, '
-        f'NPR Added={len(npr_cut)}, '
-        f'Final={len(updated_df)}'
+        f'NPR Added = {len(final_npr_cut)}'
     )
 
 # =====================================================
